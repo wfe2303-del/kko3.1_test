@@ -1,0 +1,110 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="referrer" content="no-referrer" />
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' https://accounts.google.com; connect-src 'self' https://accounts.google.com https://oauth2.googleapis.com https://www.googleapis.com https://sheets.googleapis.com; img-src 'self' data: https:; style-src 'self'; frame-src https://accounts.google.com; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'; upgrade-insecure-requests" />
+  <title>클어 출석부</title>
+  <script src="https://accounts.google.com/gsi/client" async defer></script>
+  <link rel="stylesheet" href="./styles.css" />
+</head>
+<body>
+  <section id="loginScreen" class="login-screen">
+    <div class="login-card">
+      <img class="login-logo" src="./assets/classaround-logo.png" alt="ClassAround" />
+      <button id="loginBtn" class="btn btn-primary login-google-btn" type="button">Google 계정으로 로그인</button>
+      <div id="authErr" class="auth-error"></div>
+    </div>
+  </section>
+
+  <div id="appShell" class="app-shell hidden">
+    <header class="topbar topbar-app">
+      <div class="brand-wrap">
+        <img class="brand-logo" src="./assets/classaround-logo.png" alt="ClassAround" />
+      </div>
+      <div class="topbar-actions">
+        <span id="topbarUser" class="topbar-user hidden"></span>
+        <button id="logoutBtn" class="btn" type="button">로그아웃</button>
+      </div>
+    </header>
+
+    <section class="card toolbar-card">
+      <div class="toolbar-row">
+        <button id="refreshTabsBtn" class="btn" type="button">탭 목록 새로고침</button>
+        <button id="addPanelBtn" class="btn btn-primary" type="button">패널 추가</button>
+      </div>
+    </section>
+
+    <main id="panelsRoot" class="panels-root"></main>
+  </div>
+
+  <template id="panelTemplate">
+    <section class="card panel-card">
+      <div class="panel-head">
+        <div>
+          <h2 class="panel-title"></h2>
+        </div>
+        <button class="btn btn-danger panel-remove-btn" type="button">패널 삭제</button>
+      </div>
+
+      <div class="panel-summary-grid">
+        <div class="summary-box">
+          <span class="summary-label">선택된 탭</span>
+          <strong class="summary-value js-selected-sheet">탭 미선택</strong>
+        </div>
+        <div class="summary-box">
+          <span class="summary-label">로그 파일</span>
+          <strong class="summary-value js-file-summary">파일 없음</strong>
+        </div>
+      </div>
+
+      <div class="panel-button-grid">
+        <button class="btn btn-wide js-open-sheet-modal-btn" type="button">탭 목록 열기</button>
+        <button class="btn btn-wide js-open-file-modal-btn" type="button">로그 파일 관리</button>
+      </div>
+
+      <input class="js-file-input sr-only" type="file" accept=".txt,.csv" multiple />
+
+      <div class="panel-actions">
+        <label class="check-row">
+          <input class="js-preview-only" type="checkbox" />
+          <span>열람용(시트 미기록)</span>
+        </label>
+        <button class="btn btn-primary js-run-btn" type="button">실행</button>
+        <button class="btn js-demo-btn" type="button">데모</button>
+      </div>
+
+      <div class="panel-meta hidden">
+        <span class="status-pill js-panel-status"></span>
+      </div>
+      <div class="error-box js-panel-error"></div>
+      <div class="panel-results js-panel-results"></div>
+    </section>
+  </template>
+
+  <div id="modalOverlay" class="modal-overlay hidden" aria-hidden="true">
+    <div class="modal-card" role="dialog" aria-modal="true" aria-labelledby="modalTitle">
+      <div class="modal-head">
+        <div>
+          <h3 id="modalTitle" class="modal-title"></h3>
+          <p id="modalSubtitle" class="modal-subtitle"></p>
+        </div>
+        <button id="modalCloseBtn" class="btn" type="button">닫기</button>
+      </div>
+      <div id="modalBody" class="modal-body"></div>
+    </div>
+  </div>
+
+  <script src="./js/config-loader.js"></script>
+  <script src="./js/config.js"></script>
+  <script src="./js/utils.js"></script>
+  <script src="./js/parser.js"></script>
+  <script src="./js/matcher.js"></script>
+  <script src="./js/auth.js"></script>
+  <script src="./js/sheets.js"></script>
+  <script src="./js/history.js"></script>
+  <script src="./js/ui.js"></script>
+  <script src="./js/app.js"></script>
+</body>
+</html>
