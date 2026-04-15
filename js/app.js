@@ -1,16 +1,18 @@
 (function(){
   var auth = window.KakaoCheckAuth;
-  var sheets = window.KakaoCheckSheets;
-  var parser = window.KakaoCheckParser;
-  var matcher = window.KakaoCheckMatcher;
   var history = window.KakaoCheckHistory;
+  var matcher = window.KakaoCheckMatcher;
+  var parser = window.KakaoCheckParser;
+  var sheets = window.KakaoCheckSheets;
   var ui = window.KakaoCheckUI;
   var utils = window.KakaoCheckUtils;
 
   var state = {
     nextPanelId: 1,
     sheetTitles: [],
-    panels: new Map()
+    panels: new Map(),
+    lastSheetLoadError: '',
+    backendHealthy: false
   };
 
   function bootstrap(){
@@ -21,7 +23,9 @@
       ui.setAuthState(payload);
       ui.setAuthError('');
       if(payload && payload.accessToken){
-        loadSheetTitles();
+        handleAuthenticatedState();
+      } else {
+        ui.setAppNotice('', '');
       }
     });
 
@@ -29,8 +33,8 @@
       ui.setLoginReady(true);
       ui.setAuthError('');
     }).catch(function(error){
-      ui.setLoginReady(false);
-      ui.setAuthError(error.message);
+      ui.setLoginReady(true);
+      ui.setAuthError(toUserMessage(error));
     });
 
     addPanel();
@@ -38,18 +42,17 @@
 
   function bindTopLevelEvents(){
     document.getElementById('loginForm').addEventListener('submit', async function(event){
+      var username = String(document.getElementById('loginUsername').value || '').trim();
+      var password = String(document.getElementById('loginPassword').value || '');
+
       event.preventDefault();
-
       try {
-        var username = String(document.getElementById('loginUsername').value || '').trim();
-        var password = String(document.getElementById('loginPassword').value || '');
-
         ui.setAuthError('');
         ui.setLoginReady(false);
         await auth.login(username, password);
         document.getElementById('loginPassword').value = '';
       } catch (error) {
-        ui.setAuthError(error.message);
+        ui.setAuthError(toUserMessage(error));
       } finally {
         ui.setLoginReady(true);
       }
@@ -64,45 +67,80 @@
       loadSheetTitles();
     });
 
+    document.getElementById('backendDataBtn').addEventListener('click', function(){
+      openStorageOverview();
+    });
+
     document.getElementById('addPanelBtn').addEventListener('click', function(){
       addPanel();
     });
   }
 
+  async function handleAuthenticatedState(){
+    await loadBackendHealth();
+    await loadSheetTitles();
+  }
+
+  async function loadBackendHealth(){
+    try {
+      await history.health();
+      state.backendHealthy = true;
+      if(!state.lastSheetLoadError){
+        ui.setAppNotice('', '');
+      }
+    } catch (error) {
+      state.backendHealthy = false;
+      ui.setAppNotice('백엔드 연결 확인이 필요합니다. ' + toUserMessage(error), 'bad');
+    }
+  }
+
   async function loadSheetTitles(){
     try {
       state.sheetTitles = await sheets.listSheetTitles();
+      state.lastSheetLoadError = '';
+
+      if(!state.sheetTitles.length){
+        ui.setAppNotice('불러올 수 있는 시트가 없습니다. 계정 권한 또는 Apps Script의 대상 스프레드시트 접근 권한을 확인해 주세요.', 'warn');
+      } else if(state.backendHealthy){
+        ui.setAppNotice('', '');
+      }
     } catch (error) {
-      ui.setAuthError(error.message);
+      state.sheetTitles = [];
+      state.lastSheetLoadError = toUserMessage(error);
+      ui.setAppNotice('시트 목록을 불러오지 못했습니다. ' + state.lastSheetLoadError, 'bad');
     }
   }
 
   function addPanel(){
     var panelId = state.nextPanelId;
-    state.nextPanelId += 1;
-
     var panelEl = ui.createPanelElement(panelId);
     var panelState = {
       id: panelId,
       el: panelEl,
       files: [],
-      selectedSheet: ''
+      selectedSheet: '',
+      lastExecution: null
     };
 
+    state.nextPanelId += 1;
     state.panels.set(panelId, panelState);
     bindPanelEvents(panelState);
     ui.renderSelectedSheet(panelEl, '');
     ui.renderFileSummary(panelEl, []);
     ui.setPanelStatus(panelEl, '', '');
+    ui.setPanelActionState(panelEl, {
+      manualEnabled: false,
+      manualLabel: '미매칭 수동 처리',
+      storageEnabled: false
+    });
+
     document.getElementById('panelsRoot').appendChild(panelEl);
     refreshRemoveButtons();
   }
 
   function removePanel(panelId){
-    if(state.panels.size <= 1) return;
-
     var panelState = state.panels.get(panelId);
-    if(!panelState) return;
+    if(!panelState || state.panels.size <= 1) return;
 
     panelState.el.remove();
     state.panels.delete(panelId);
@@ -116,9 +154,10 @@
 
   function refreshRemoveButtons(){
     state.panels.forEach(function(panelState){
-      var btn = utils.qs('.panel-remove-btn', panelState.el);
-      if(!btn) return;
-      btn.disabled = state.panels.size <= 1;
+      var button = utils.qs('.panel-remove-btn', panelState.el);
+      if(button){
+        button.disabled = state.panels.size <= 1;
+      }
     });
   }
 
@@ -128,40 +167,42 @@
     var runBtn = utils.qs('.js-run-btn', el);
     var demoBtn = utils.qs('.js-demo-btn', el);
     var removeBtn = utils.qs('.panel-remove-btn', el);
-    var openSheetBtn = utils.qs('.js-open-sheet-modal-btn', el);
-    var openFileBtn = utils.qs('.js-open-file-modal-btn', el);
+    var sheetBtn = utils.qs('.js-open-sheet-modal-btn', el);
+    var fileBtn = utils.qs('.js-open-file-modal-btn', el);
+    var manualBtn = utils.qs('.js-manual-review-btn', el);
+    var storageBtn = utils.qs('.js-storage-data-btn', el);
 
-    openSheetBtn.addEventListener('click', function(){
+    sheetBtn.addEventListener('click', function(){
       openSheetPicker(panelState.id);
     });
-
-    openFileBtn.addEventListener('click', function(){
+    fileBtn.addEventListener('click', function(){
       openFileManager(panelState.id);
     });
-
+    manualBtn.addEventListener('click', function(){
+      openManualReview(panelState.id);
+    });
+    storageBtn.addEventListener('click', function(){
+      openStoredSheetData(panelState.selectedSheet);
+    });
     fileInput.addEventListener('change', function(event){
       var incoming = Array.from(event.target.files || []);
       if(!incoming.length) return;
 
       panelState.files = appendUniqueFiles(panelState.files, incoming);
       ui.renderFileSummary(el, panelState.files);
-      ui.setPanelStatus(el, panelState.files.length + '개 파일 준비', '');
+      ui.setPanelStatus(el, panelState.files.length + '개 파일 준비됨', '');
       event.target.value = '';
 
-      var modal = ui.getModalState();
-      if(modal && modal.type === 'file-manager' && modal.panelId === panelState.id){
+      if(ui.getModalState() && ui.getModalState().type === 'file-manager' && ui.getModalState().panelId === panelState.id){
         openFileManager(panelState.id);
       }
     });
-
     runBtn.addEventListener('click', function(){
       runPanel(panelState.id);
     });
-
     demoBtn.addEventListener('click', function(){
       runDemo(panelState.id);
     });
-
     removeBtn.addEventListener('click', function(){
       removePanel(panelState.id);
     });
@@ -173,14 +214,17 @@
 
     ui.openSheetPickerModal({
       panelId: panelId,
-      title: panelState.selectedSheet ? panelState.selectedSheet + ' 시트 선택' : '시트 선택',
-      subtitle: '',
+      title: panelState.selectedSheet ? (panelState.selectedSheet + ' 시트 선택') : '시트 선택',
       titles: state.sheetTitles,
       selectedTitle: panelState.selectedSheet,
+      emptyText: state.lastSheetLoadError || '검색 결과가 없습니다.',
       onSelect: function(title){
         panelState.selectedSheet = title;
-        ui.renderSelectedSheet(panelState.el, panelState.selectedSheet);
-        ui.setPanelStatus(panelState.el, '시트 선택 완료', '');
+        panelState.lastExecution = null;
+        ui.renderSelectedSheet(panelState.el, title);
+        ui.setPanelError(panelState.el, '');
+        ui.renderResults(panelState.el, []);
+        syncPanelButtons(panelState);
       }
     });
   }
@@ -188,15 +232,13 @@
   function openFileManager(panelId){
     var panelState = state.panels.get(panelId);
     if(!panelState) return;
-
     ui.openFileManagerModal(buildFileModalOptions(panelState));
   }
 
   function buildFileModalOptions(panelState){
     return {
       panelId: panelState.id,
-      title: panelState.selectedSheet ? panelState.selectedSheet + ' 로그 파일 관리' : '로그 파일 관리',
-      subtitle: '',
+      title: panelState.selectedSheet ? (panelState.selectedSheet + ' 로그 파일 관리') : '로그 파일 관리',
       files: panelState.files,
       onAddRequest: function(){
         var input = utils.qs('.js-file-input', panelState.el);
@@ -205,12 +247,12 @@
       onRemoveIndex: function(index){
         panelState.files.splice(index, 1);
         ui.renderFileSummary(panelState.el, panelState.files);
-        ui.setPanelStatus(panelState.el, panelState.files.length ? '파일 목록 수정됨' : '파일 비어 있음', '');
+        ui.setPanelStatus(panelState.el, panelState.files.length ? '파일 목록 수정됨' : '파일 없음', '');
       },
       onClearAll: function(){
         panelState.files = [];
         ui.renderFileSummary(panelState.el, panelState.files);
-        ui.setPanelStatus(panelState.el, '파일 비어 있음', '');
+        ui.setPanelStatus(panelState.el, '파일 없음', '');
       },
       getFreshOptions: function(){
         return buildFileModalOptions(panelState);
@@ -219,10 +261,10 @@
   }
 
   function appendUniqueFiles(existingFiles, incomingFiles){
-    var merged = existingFiles.slice();
     var seen = new Set(existingFiles.map(function(file){
       return [file.name, file.size, file.lastModified].join('::');
     }));
+    var merged = existingFiles.slice();
 
     incomingFiles.forEach(function(file){
       var key = [file.name, file.size, file.lastModified].join('::');
@@ -234,29 +276,204 @@
     return merged;
   }
 
-  async function loadPendingItems(sheetTitle, historyState){
-    if(!history || typeof history.listPending !== 'function'){
-      historyState.enabled = false;
-      historyState.message = '매칭 기록 백엔드가 연결되지 않았습니다.';
-      return [];
+  function createHistoryState(){
+    return {
+      enabled: false,
+      pendingCount: 0,
+      manualRuleCount: 0,
+      openedCount: 0,
+      resolvedCount: 0,
+      openCount: 0,
+      synced: false,
+      syncSkipped: false,
+      syncError: '',
+      message: ''
+    };
+  }
+
+  function syncPanelButtons(panelState){
+    var execution = panelState.lastExecution;
+    var manualEnabled = !!(state.backendHealthy && execution && !execution.previewOnly && execution.result && execution.result.currentUnmatchedItems.length);
+    var manualLabel = '미매칭 수동 처리';
+
+    if(execution && execution.previewOnly){
+      manualLabel = '미리보기 결과는 수동 처리 불가';
+    } else if(execution && execution.result){
+      manualLabel = '미매칭 수동 처리 (' + execution.result.currentUnmatchedItems.length + ')';
     }
 
-    var response = await history.listPending(sheetTitle);
-    if(!response.enabled){
+    ui.setPanelActionState(panelState.el, {
+      manualEnabled: manualEnabled,
+      manualLabel: manualLabel,
+      storageEnabled: !!(state.backendHealthy && panelState.selectedSheet)
+    });
+  }
+
+  async function runPanel(panelId){
+    var panelState = state.panels.get(panelId);
+    var previewOnly;
+    var chatText;
+    var parsed;
+    var rosterResponse;
+    var pendingResponse;
+    var historyState = createHistoryState();
+    var result;
+    var statusMessage;
+
+    if(!panelState) return;
+    previewOnly = utils.qs('.js-preview-only', panelState.el).checked;
+
+    try {
+      ui.setPanelError(panelState.el, '');
+      ui.setPanelStatus(panelState.el, '실행 중...', 'warn');
+
+      if(!auth.getAccessToken()) throw new Error('먼저 로그인해 주세요.');
+      if(!panelState.selectedSheet) throw new Error('시트를 먼저 선택해 주세요.');
+      if(!panelState.files.length) throw new Error('카카오톡 입장 로그 파일을 하나 이상 추가해 주세요.');
+
+      chatText = await parser.combineFiles(panelState.files);
+      parsed = parser.parseChatText(chatText);
+      rosterResponse = await sheets.loadRosterRows(panelState.selectedSheet);
+
+      if(!rosterResponse.rows.length){
+        throw new Error('선택한 시트에서 불러온 수강생 명단이 없습니다. Apps Script 접근 권한과 역할 열(N열) 값을 확인해 주세요.');
+      }
+
+      try {
+        pendingResponse = await history.listPending(panelState.selectedSheet);
+        historyState.enabled = !!pendingResponse.enabled;
+        historyState.pendingCount = Array.isArray(pendingResponse.items) ? pendingResponse.items.length : 0;
+        historyState.manualRuleCount = Array.isArray(pendingResponse.manualRules) ? pendingResponse.manualRules.length : 0;
+      } catch (error) {
+        pendingResponse = { enabled: false, items: [], manualRules: [] };
+        historyState.enabled = false;
+        historyState.message = toUserMessage(error);
+      }
+
+      result = matcher.buildResult(rosterResponse.rows, parsed, {
+        pendingItems: pendingResponse.items || [],
+        manualRules: pendingResponse.manualRules || [],
+        sheetTitle: panelState.selectedSheet
+      });
+
+      if(!previewOnly && result.updates.length){
+        await sheets.writeUpdates(result.updates);
+      }
+
+      try {
+        await syncHistoryRun(panelState, result, previewOnly, historyState);
+      } catch (error) {
+        historyState.syncError = toUserMessage(error);
+      }
+
+      panelState.lastExecution = {
+        parsed: parsed,
+        previewOnly: previewOnly,
+        rosterRows: rosterResponse.rows || [],
+        sheetMeta: rosterResponse.meta || {},
+        pendingItems: Array.isArray(pendingResponse.items) ? pendingResponse.items.slice() : [],
+        manualRules: Array.isArray(pendingResponse.manualRules) ? pendingResponse.manualRules.slice() : [],
+        result: result,
+        historyState: historyState
+      };
+
+      renderRunResult(panelState);
+
+      statusMessage = previewOnly ? '미리보기 완료' : '체크 완료';
+      if(rosterResponse.meta && rosterResponse.meta.fallbackUsed){
+        statusMessage += ' (역할값 fallback 적용)';
+      }
+
+      if(historyState.syncError){
+        ui.setPanelStatus(panelState.el, statusMessage + ' / 기록 저장 경고', 'warn');
+        ui.setPanelError(panelState.el, historyState.syncError);
+      } else {
+        ui.setPanelStatus(panelState.el, statusMessage, previewOnly || (rosterResponse.meta && rosterResponse.meta.fallbackUsed) ? 'warn' : 'ok');
+      }
+    } catch (error) {
+      panelState.lastExecution = null;
+      ui.renderResults(panelState.el, []);
+      ui.setPanelStatus(panelState.el, '실패', 'bad');
+      ui.setPanelError(panelState.el, toUserMessage(error));
+      syncPanelButtons(panelState);
+      console.error(error);
+    }
+  }
+
+  function runDemo(panelId){
+    var panelState = state.panels.get(panelId);
+    var roster;
+    var parsed;
+
+    if(!panelState) return;
+
+    roster = [
+      { rowNumber: 2, sheetTitle: '데모', name: '김하늘', phone: '010-1234-5678', nameNormalized: utils.normalizeName('김하늘') },
+      { rowNumber: 3, sheetTitle: '데모', name: '박시온', phone: '010-3456-7890', nameNormalized: utils.normalizeName('박시온') },
+      { rowNumber: 4, sheetTitle: '데모', name: '이하린', phone: '010-1717-1771', nameNormalized: utils.normalizeName('이하린') },
+      { rowNumber: 5, sheetTitle: '데모', name: '최도윤', phone: '010-1111-0000', nameNormalized: utils.normalizeName('최도윤') },
+      { rowNumber: 6, sheetTitle: '데모', name: '김하늘', phone: '010-9999-9999', nameNormalized: utils.normalizeName('김하늘') }
+    ];
+
+    parsed = parser.parseChatText([
+      '최도윤0000님이 입장하셨습니다.',
+      '김하늘5678님이 입장하셨습니다.',
+      '이하린1771님이 들어왔습니다.',
+      '박시온님이 입장하셨습니다.',
+      '진주5148님이 입장하셨습니다.',
+      '모델스탭님이 입장하셨습니다.',
+      '김하늘5678님이 나갔습니다.',
+      '김하늘5678님이 입장하셨습니다.',
+      '박시온님이 나갔습니다.'
+    ].join('\n'));
+
+    panelState.lastExecution = {
+      parsed: parsed,
+      previewOnly: true,
+      rosterRows: roster,
+      sheetMeta: {
+        fallbackUsed: false
+      },
+      pendingItems: [],
+      manualRules: [],
+      result: matcher.buildResult(roster, parsed, {
+        pendingItems: [],
+        manualRules: [],
+        sheetTitle: '데모'
+      }),
+      historyState: createHistoryState()
+    };
+
+    ui.setPanelError(panelState.el, '');
+    renderRunResult(panelState);
+    ui.setPanelStatus(panelState.el, '데모 완료', 'ok');
+  }
+
+  async function syncHistoryRun(panelState, result, previewOnly, historyState){
+    var response;
+    if(previewOnly){
+      historyState.syncSkipped = true;
+      return;
+    }
+
+    response = await history.syncRun(buildHistoryPayload(panelState, result, previewOnly));
+    if(response && response.enabled === false){
       historyState.enabled = false;
-      historyState.message = response.message || '매칭 기록 백엔드가 설정되지 않았습니다.';
-      return [];
+      historyState.message = response.message || '매칭 기록 백엔드가 비활성화되어 있습니다.';
+      historyState.syncSkipped = true;
+      return;
     }
 
     historyState.enabled = true;
-    historyState.pendingLoaded = true;
-    historyState.pendingCount = Array.isArray(response.items) ? response.items.length : 0;
-    return Array.isArray(response.items) ? response.items : [];
+    historyState.synced = !!response.synced;
+    historyState.runId = String(response.runId || '').trim();
+    historyState.openCount = Number(response.openCount || 0);
+    historyState.openedCount = Number(response.openedCount || 0);
+    historyState.resolvedCount = Number(response.resolvedCount || 0);
   }
 
   function buildHistoryPayload(panelState, result, previewOnly){
     var user = auth.getCurrentUser() || {};
-
     return {
       sheetTitle: panelState.selectedSheet,
       previewOnly: !!previewOnly,
@@ -277,188 +494,30 @@
         finalLeftCount: result.finalLeftCount,
         missingCount: result.missingCount,
         currentUnmatchedCount: result.currentUnmatchedItems.length,
-        resolvedPendingCount: result.pendingResolvedItems.length
+        resolvedPendingCount: result.pendingResolvedItems.length,
+        manualResolvedCount: result.manualResolvedItems.length,
+        excludedByRuleCount: result.excludedByRuleItems.length
       },
       currentUnmatchedItems: result.currentUnmatchedItems,
-      resolvedPendingItems: result.pendingResolvedItems
+      resolvedPendingItems: result.pendingResolvedItems.concat(result.manualResolvedItems)
     };
   }
 
-  async function syncHistoryRun(panelState, result, previewOnly, historyState){
-    if(previewOnly){
-      historyState.syncSkipped = true;
+  function renderRunResult(panelState){
+    var execution = panelState.lastExecution;
+    var result;
+    var historyState;
+    var sections;
+
+    if(!execution){
+      ui.renderResults(panelState.el, []);
+      syncPanelButtons(panelState);
       return;
     }
 
-    if(!history || typeof history.syncRun !== 'function'){
-      historyState.syncSkipped = true;
-      return;
-    }
-
-    var response = await history.syncRun(buildHistoryPayload(panelState, result, previewOnly));
-    if(!response.enabled){
-      historyState.enabled = false;
-      historyState.message = response.message || '매칭 기록 백엔드가 설정되지 않았습니다.';
-      historyState.syncSkipped = true;
-      return;
-    }
-
-    historyState.enabled = true;
-    historyState.synced = !!response.synced;
-    historyState.runId = String(response.runId || '').trim();
-    historyState.openCount = Number(response.openCount || 0);
-    historyState.openedCount = Number(response.openedCount || 0);
-    historyState.resolvedCount = Number(response.resolvedCount || 0);
-  }
-
-  function buildHistorySummarySection(historyState, previewOnly){
-    var rows = [];
-
-    rows.push(['백엔드', historyState.enabled ? '연결됨' : (historyState.message || '미설정')]);
-    rows.push(['불러온 기존 미매칭', historyState.pendingCount || 0]);
-    rows.push(['이번 실행 신규 미매칭', historyState.openedCount || 0]);
-    rows.push(['이번 실행 해소 건수', historyState.resolvedCount || 0]);
-    rows.push(['현재 대기 건수', historyState.openCount || 0]);
-
-    if(previewOnly){
-      rows.push(['저장 여부', '미리보기라 저장 안 함']);
-    } else if(historyState.synced){
-      rows.push(['저장 여부', '저장 완료']);
-    } else if(historyState.syncSkipped){
-      rows.push(['저장 여부', '저장 안 함']);
-    } else {
-      rows.push(['저장 여부', '저장 실패']);
-    }
-
-    if(historyState.syncError){
-      rows.push(['오류', historyState.syncError]);
-    }
-
-    return {
-      title: '매칭 기록 동기화',
-      headers: ['항목', '값'],
-      rows: rows
-    };
-  }
-
-  async function runPanel(panelId){
-    var panelState = state.panels.get(panelId);
-    if(!panelState) return;
-
-    var previewOnly = utils.qs('.js-preview-only', panelState.el).checked;
-    var historyState = {
-      enabled: false,
-      pendingLoaded: false,
-      pendingCount: 0,
-      openedCount: 0,
-      resolvedCount: 0,
-      openCount: 0,
-      synced: false,
-      syncSkipped: false,
-      syncError: '',
-      message: ''
-    };
-
-    try {
-      ui.setPanelError(panelState.el, '');
-      ui.setPanelStatus(panelState.el, '실행 중...', 'warn');
-
-      if(!auth.getAccessToken()) throw new Error('먼저 로그인해주세요.');
-      if(!panelState.selectedSheet) throw new Error('시트를 먼저 선택해주세요.');
-      if(!panelState.files.length) throw new Error('카카오 대화 로그 파일을 하나 이상 추가해주세요.');
-
-      var chatText = await parser.combineFiles(panelState.files);
-      var parsed = parser.parseChatText(chatText);
-      var roster = await sheets.loadRosterRows(panelState.selectedSheet);
-      var pendingItems = [];
-
-      try {
-        pendingItems = await loadPendingItems(panelState.selectedSheet, historyState);
-      } catch (historyError) {
-        historyState.syncError = historyError.message || String(historyError);
-      }
-
-      var result = matcher.buildResult(roster, parsed, {
-        pendingItems: pendingItems,
-        sheetTitle: panelState.selectedSheet
-      });
-
-      if(!previewOnly && result.updates.length){
-        await sheets.writeUpdates(result.updates);
-      }
-
-      try {
-        await syncHistoryRun(panelState, result, previewOnly, historyState);
-      } catch (syncError) {
-        historyState.syncError = syncError.message || String(syncError);
-      }
-
-      renderRunResult(panelState, result, previewOnly, historyState);
-
-      if(historyState.syncError){
-        ui.setPanelStatus(
-          panelState.el,
-          previewOnly ? '미리보기 완료 (기록 조회 경고)' : '체크 완료 (기록 저장 경고)',
-          'warn'
-        );
-        ui.setPanelError(panelState.el, historyState.syncError);
-      } else {
-        ui.setPanelStatus(panelState.el, previewOnly ? '미리보기 완료' : '체크 완료', 'ok');
-      }
-    } catch (error) {
-      ui.setPanelStatus(panelState.el, '실패', 'bad');
-      ui.setPanelError(panelState.el, error.message || String(error));
-      console.error(error);
-    }
-  }
-
-  function runDemo(panelId){
-    var panelState = state.panels.get(panelId);
-    if(!panelState) return;
-
-    var roster = [
-      { rowNumber: 2, sheetTitle: '데모', name: '김하늘', phone: '010-1234-5678', nameNormalized: utils.normalizeName('김하늘') },
-      { rowNumber: 3, sheetTitle: '데모', name: '박시연', phone: '010-3456-7890', nameNormalized: utils.normalizeName('박시연') },
-      { rowNumber: 4, sheetTitle: '데모', name: '이하린', phone: '010-1717-1771', nameNormalized: utils.normalizeName('이하린') },
-      { rowNumber: 5, sheetTitle: '데모', name: '최도윤', phone: '010-1111-0000', nameNormalized: utils.normalizeName('최도윤') },
-      { rowNumber: 6, sheetTitle: '데모', name: '김하늘', phone: '010-9999-9999', nameNormalized: utils.normalizeName('김하늘') }
-    ];
-
-    var parsed = parser.parseChatText([
-      '최도윤/0000님이 입장했습니다.',
-      '김하늘5678님이 입장했습니다.',
-      '이하린1771님이 들어왔습니다.',
-      '박시연님이 입장했습니다.',
-      '진주연2514님이 입장했습니다.',
-      '모델실험테스트님이 입장했습니다.',
-      '김하늘5678님이 나갔습니다.',
-      '김하늘5678님이 입장했습니다.',
-      '박시연님이 나갔습니다.'
-    ].join('\n'));
-
-    var result = matcher.buildResult(roster, parsed, {
-      pendingItems: [],
-      sheetTitle: '데모'
-    });
-
-    ui.setPanelError(panelState.el, '');
-    renderRunResult(panelState, result, true, {
-      enabled: false,
-      pendingLoaded: false,
-      pendingCount: 0,
-      openedCount: 0,
-      resolvedCount: 0,
-      openCount: 0,
-      synced: false,
-      syncSkipped: true,
-      syncError: '',
-      message: '데모 모드에서는 저장하지 않습니다.'
-    });
-    ui.setPanelStatus(panelState.el, '데모 완료', 'ok');
-  }
-
-  function renderRunResult(panelState, result, previewOnly, historyState){
-    var sections = [
+    result = execution.result;
+    historyState = execution.historyState || createHistoryState();
+    sections = [
       {
         title: '명단 기준 상태',
         headers: ['row', 'name', 'phone', 'status', 'matched', 'notes'],
@@ -481,6 +540,16 @@
         rows: result.pendingResolvedRows
       },
       {
+        title: '저장된 수동 매칭',
+        headers: ['row', 'name', 'phone', 'label', 'reason'],
+        rows: result.manualResolvedRows
+      },
+      {
+        title: '저장된 코칭스태프 제외',
+        headers: ['label', 'reason'],
+        rows: result.excludedByRuleRows
+      },
+      {
         title: '명단 외 입장',
         headers: ['name/last4'],
         rows: result.extra
@@ -491,21 +560,389 @@
         rows: result.leavers
       },
       {
-        title: previewOnly ? '예상 반영 값' : '실제 반영 값',
+        title: execution.previewOnly ? '예상 반영 값' : '실제 반영 값',
         headers: ['range', 'value'],
         rows: result.updates.map(function(item){
           return [item.range, item.values && item.values[0] ? item.values[0][0] : ''];
         })
       },
       {
-        title: '로그 요약',
-        headers: ['입장 로그 수', '퇴장 로그 수', '명단 입장 수', '명단 퇴장 수'],
-        rows: [[result.joinedCount, result.leftCount, result.attendingCount, result.finalLeftCount]]
-      },
-      buildHistorySummarySection(historyState || {}, previewOnly)
+        summary: [
+          { label: '입장 로그', value: result.joinedCount },
+          { label: '퇴장 로그', value: result.leftCount },
+          { label: '명단 입장', value: result.attendingCount },
+          { label: '미입장', value: result.missingCount },
+          { label: '현재 미매칭', value: result.currentUnmatchedItems.length },
+          { label: '수동 규칙', value: historyState.manualRuleCount || 0 },
+          { label: '열린 대기', value: historyState.openCount || 0 },
+          { label: '저장 상태', value: buildSyncLabel(historyState, execution.previewOnly) }
+        ]
+      }
     ];
 
     ui.renderResults(panelState.el, sections);
+    syncPanelButtons(panelState);
+  }
+
+  function buildSyncLabel(historyState, previewOnly){
+    if(previewOnly) return '미리보기';
+    if(historyState.syncError) return '저장 경고';
+    if(historyState.synced) return '동기화 완료';
+    if(historyState.syncSkipped) return '저장 안 함';
+    return historyState.enabled ? '대기 중' : (historyState.message || '백엔드 미설정');
+  }
+
+  function openManualReview(panelId){
+    var panelState = state.panels.get(panelId);
+    var execution;
+    var result;
+    var missingItems;
+
+    if(!panelState || !panelState.lastExecution){
+      ui.openCustomModal({
+        panelId: panelId,
+        title: '미매칭 수동 처리',
+        subtitle: '먼저 실행 결과가 있어야 합니다.',
+        render: function(body){
+          ui.appendEmptyState(body, '이 패널에서 먼저 입장 체크를 실행해 주세요.');
+        }
+      });
+      return;
+    }
+
+    execution = panelState.lastExecution;
+    result = execution.result;
+    missingItems = result.missingRosterItems || [];
+
+    ui.openCustomModal({
+      type: 'manual-review',
+      panelId: panelId,
+      title: '미매칭 수동 처리',
+      subtitle: panelState.selectedSheet + ' · 현재 미매칭 ' + result.currentUnmatchedItems.length + '건',
+      render: function(body){
+        var list = document.createElement('div');
+        var notice;
+
+        if(execution.previewOnly){
+          notice = document.createElement('div');
+          notice.className = 'modal-note';
+          notice.textContent = '미리보기 결과에서는 수동 처리 저장을 할 수 없습니다. 실제 실행 후 다시 시도해 주세요.';
+          body.appendChild(notice);
+        }
+
+        if(!result.currentUnmatchedItems.length){
+          ui.appendEmptyState(body, '현재 미매칭 항목이 없습니다.');
+          return;
+        }
+
+        list.className = 'manual-review-list';
+        result.currentUnmatchedItems.forEach(function(item){
+          var card = document.createElement('div');
+          var title = document.createElement('strong');
+          var meta1 = document.createElement('div');
+          var meta2 = document.createElement('div');
+          var actions = document.createElement('div');
+          var matchBtn = document.createElement('button');
+          var excludeBtn = document.createElement('button');
+
+          card.className = 'manual-card';
+          title.textContent = item.label;
+          meta1.className = 'manual-meta';
+          meta2.className = 'manual-meta';
+          actions.className = 'manual-card-actions';
+          meta1.textContent = '분류: ' + getUnmatchedCategoryText(item.category);
+          meta2.textContent = '사유: ' + item.reason;
+
+          matchBtn.type = 'button';
+          matchBtn.className = 'btn btn-primary';
+          matchBtn.textContent = missingItems.length ? '미입장 수강생으로 입장 처리' : '선택 가능한 미입장 수강생 없음';
+          matchBtn.disabled = execution.previewOnly || !missingItems.length;
+          matchBtn.addEventListener('click', function(){
+            openManualMatchPicker(panelState.id, item);
+          });
+
+          excludeBtn.type = 'button';
+          excludeBtn.className = 'btn';
+          excludeBtn.textContent = '코칭스태프로 제외';
+          excludeBtn.disabled = execution.previewOnly;
+          excludeBtn.addEventListener('click', function(){
+            if(window.confirm("'" + item.label + "' 항목을 코칭스태프로 제외할까요?")){
+              applyManualAction(panelState.id, item, 'exclude-staff', null);
+            }
+          });
+
+          card.appendChild(title);
+          card.appendChild(meta1);
+          card.appendChild(meta2);
+          actions.appendChild(matchBtn);
+          actions.appendChild(excludeBtn);
+          card.appendChild(actions);
+          list.appendChild(card);
+        });
+
+        body.appendChild(list);
+      }
+    });
+  }
+
+  function openManualMatchPicker(panelId, queueItem){
+    var panelState = state.panels.get(panelId);
+    var execution;
+    var candidates;
+
+    if(!panelState || !panelState.lastExecution) return;
+    execution = panelState.lastExecution;
+    candidates = (execution.result && execution.result.missingRosterItems) || [];
+
+    ui.openCustomModal({
+      type: 'manual-match-picker',
+      panelId: panelId,
+      title: '수동 매칭 대상 선택',
+      subtitle: queueItem.label + ' · 미입장 수강생에서 선택',
+      render: function(body){
+        var list = document.createElement('div');
+
+        if(!candidates.length){
+          ui.appendEmptyState(body, '선택 가능한 미입장 수강생이 없습니다.');
+          return;
+        }
+
+        list.className = 'modal-list';
+        candidates.forEach(function(candidate){
+          var button = document.createElement('button');
+          var meta = document.createElement('div');
+
+          button.type = 'button';
+          button.className = 'modal-list-btn';
+          button.textContent = candidate.rowNumber + '행 · ' + utils.formatPersonLabel(candidate.name, candidate.phone);
+          meta.className = 'list-item-subtext';
+          meta.textContent = '현재 상태: ' + candidate.status + (candidate.notes ? ' · ' + candidate.notes : '');
+
+          button.appendChild(meta);
+          button.addEventListener('click', function(){
+            applyManualAction(panelId, queueItem, 'match-student', candidate);
+          });
+          list.appendChild(button);
+        });
+
+        body.appendChild(list);
+      }
+    });
+  }
+
+  async function applyManualAction(panelId, queueItem, actionType, targetRow){
+    var panelState = state.panels.get(panelId);
+    var execution;
+    var response;
+
+    if(!panelState || !panelState.lastExecution) return;
+    execution = panelState.lastExecution;
+
+    try {
+      ui.setPanelError(panelState.el, '');
+      ui.setPanelStatus(panelState.el, '수동 처리 저장 중...', 'warn');
+
+      response = await history.applyManualAction({
+        sheetTitle: panelState.selectedSheet,
+        item: queueItem,
+        actionType: actionType,
+        targetRow: targetRow ? {
+          rowNumber: targetRow.rowNumber,
+          name: targetRow.name,
+          phone: targetRow.phone
+        } : null
+      });
+
+      if(response && response.enabled === false){
+        throw new Error(response.message || '수동 처리를 저장하지 못했습니다.');
+      }
+
+      if(actionType === 'match-student' && targetRow){
+        await sheets.writeUpdates([matcher.createStatusUpdate(targetRow)]);
+      }
+
+      execution.manualRules = upsertManualRule(execution.manualRules, response.manualRule || {});
+      execution.pendingItems = execution.pendingItems.filter(function(item){
+        return item.queueKey !== queueItem.queueKey;
+      });
+      execution.result = matcher.buildResult(execution.rosterRows, execution.parsed, {
+        pendingItems: execution.pendingItems,
+        manualRules: execution.manualRules,
+        sheetTitle: panelState.selectedSheet
+      });
+      if(execution.historyState){
+        execution.historyState.pendingCount = Math.max(0, Number(execution.historyState.pendingCount || 0) - 1);
+        execution.historyState.openCount = Math.max(0, Number(execution.historyState.openCount || 0) - 1);
+        execution.historyState.manualRuleCount = execution.manualRules.length;
+      }
+
+      renderRunResult(panelState);
+      ui.setPanelStatus(panelState.el, actionType === 'match-student' ? '수동 매칭 저장 완료' : '코칭스태프 제외 저장 완료', 'ok');
+      openManualReview(panelId);
+    } catch (error) {
+      ui.setPanelStatus(panelState.el, '수동 처리 실패', 'bad');
+      ui.setPanelError(panelState.el, toUserMessage(error));
+    }
+  }
+
+  function upsertManualRule(rules, manualRule){
+    var normalized = matcher.normalizeManualRule(manualRule);
+    var filtered;
+
+    if(!normalized || !normalized.queueKey){
+      return Array.isArray(rules) ? rules.slice() : [];
+    }
+
+    filtered = (Array.isArray(rules) ? rules : []).filter(function(rule){
+      var current = matcher.normalizeManualRule(rule);
+      return !current || current.queueKey !== normalized.queueKey;
+    });
+    filtered.push(manualRule);
+    return filtered;
+  }
+
+  async function openStorageOverview(){
+    var response;
+
+    try {
+      response = await history.getStorageOverview();
+      ui.openCustomModal({
+        type: 'storage-overview',
+        title: '서버 저장 데이터',
+        subtitle: '백엔드 시트에 저장된 시트별 현황',
+        render: function(body){
+          var list = document.createElement('div');
+
+          if(!response.sheets || !response.sheets.length){
+            ui.appendEmptyState(body, '저장된 시트 데이터가 없습니다.');
+            return;
+          }
+
+          body.appendChild(ui.buildMetricGrid([
+            { label: '저장 시트', value: response.sheets.length },
+            { label: '전체 열린 미매칭', value: response.totalOpenCount || 0 },
+            { label: '수동 규칙', value: response.totalManualRuleCount || 0 },
+            { label: '최근 저장', value: response.lastSavedAt || '-' }
+          ]));
+
+          list.className = 'modal-list';
+          response.sheets.forEach(function(item){
+            var button = document.createElement('button');
+            var meta = document.createElement('div');
+
+            button.type = 'button';
+            button.className = 'modal-list-btn';
+            button.textContent = item.sheetTitle;
+            meta.className = 'list-item-subtext';
+            meta.textContent = '열린 미매칭 ' + item.openCount + '건 · 수동 규칙 ' + item.manualRuleCount + '건 · 실행 기록 ' + item.runCount + '건';
+            button.appendChild(meta);
+            button.addEventListener('click', function(){
+              openStoredSheetData(item.sheetTitle);
+            });
+            list.appendChild(button);
+          });
+
+          body.appendChild(list);
+        }
+      });
+    } catch (error) {
+      ui.setAppNotice('서버 저장 데이터를 불러오지 못했습니다. ' + toUserMessage(error), 'bad');
+    }
+  }
+
+  async function openStoredSheetData(sheetTitle){
+    var data;
+    if(!sheetTitle){
+      ui.setAppNotice('저장 데이터를 볼 시트를 먼저 선택해 주세요.', 'warn');
+      return;
+    }
+
+    try {
+      data = await history.getStoredSheetData(sheetTitle);
+      ui.openCustomModal({
+        type: 'stored-sheet-data',
+        title: '서버 저장 데이터',
+        subtitle: sheetTitle,
+        render: function(body){
+          body.appendChild(ui.buildMetricGrid([
+            { label: '열린 미매칭', value: data.summary ? data.summary.openCount : 0 },
+            { label: '수동 규칙', value: data.summary ? data.summary.manualRuleCount : 0 },
+            { label: '실행 기록', value: data.summary ? data.summary.runCount : 0 },
+            { label: '최근 저장', value: data.summary ? (data.summary.lastSavedAt || '-') : '-' }
+          ]));
+
+          appendStorageSection(body, '최근 실행 기록', ['savedAt', 'previewOnly', 'actor', 'joined', 'left', 'attending', 'missing', 'currentUnmatched'], (data.runs || []).map(function(item){
+            return [
+              item.savedAt,
+              item.previewOnly ? '미리보기' : '실행',
+              item.actorName || item.actorEmail || '',
+              item.joinedCount,
+              item.leftCount,
+              item.attendingCount,
+              item.missingCount,
+              item.currentUnmatchedCount
+            ];
+          }));
+
+          appendStorageSection(body, '미매칭 / 수동 처리 큐', ['status', 'label', 'reason', 'attempts', 'lastSeenAt', 'resolution'], (data.queueItems || []).map(function(item){
+            return [
+              item.status,
+              item.label,
+              item.reason,
+              item.attemptCount,
+              item.lastSeenAt,
+              item.resolutionLabel || ''
+            ];
+          }));
+        }
+      });
+    } catch (error) {
+      ui.setAppNotice('저장된 시트 데이터를 불러오지 못했습니다. ' + toUserMessage(error), 'bad');
+    }
+  }
+
+  function appendStorageSection(root, titleText, headers, rows){
+    var section = document.createElement('section');
+    var title = document.createElement('h4');
+
+    section.className = 'modal-section';
+    title.className = 'modal-section-title';
+    title.textContent = titleText;
+    section.appendChild(title);
+
+    if(rows && rows.length){
+      section.appendChild(ui.buildTableWrap(headers, rows));
+    } else {
+      ui.appendEmptyState(section, '저장된 데이터가 없습니다.');
+    }
+
+    root.appendChild(section);
+  }
+
+  function getUnmatchedCategoryText(category){
+    if(category === 'outside-roster') return '명단 외';
+    if(category === 'duplicate-name-no-number') return '동명이인 / 번호 없음';
+    if(category === 'duplicate-name-mismatch') return '동명이인 / 번호 불일치';
+    if(category === 'duplicate-name-collision') return '동명이인 / 번호 중복';
+    return category || '';
+  }
+
+  function toUserMessage(error){
+    var message = error && error.message ? error.message : String(error || '');
+
+    if(message.indexOf('MATCH_BACKEND_TOKEN script property is missing.') >= 0){
+      return 'Apps Script 프로젝트의 스크립트 속성에 MATCH_BACKEND_TOKEN 값이 없습니다. 현재 Vercel의 KAKAO_CHECK_APPS_SCRIPT_TOKEN 값과 같은 값을 넣고 Apps Script 웹앱을 다시 배포해 주세요.';
+    }
+    if(message.indexOf('Invalid backend token.') >= 0){
+      return 'Vercel의 KAKAO_CHECK_APPS_SCRIPT_TOKEN 값과 Apps Script의 MATCH_BACKEND_TOKEN 값이 서로 다릅니다.';
+    }
+    if(message.indexOf('Sheet not found:') === 0){
+      return '선택한 시트를 찾지 못했습니다. 시트명이 바뀌었는지 확인해 주세요. (' + message.replace('Sheet not found:', '').trim() + ')';
+    }
+    if(message.indexOf('You do not have access to this sheet.') >= 0){
+      return '현재 계정으로는 이 시트에 접근할 수 없습니다.';
+    }
+    return message;
   }
 
   document.addEventListener('DOMContentLoaded', bootstrap);

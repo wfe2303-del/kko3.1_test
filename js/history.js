@@ -17,41 +17,33 @@
         'Accept': 'application/json'
       }
     }, init || {}));
-
     var text = await response.text();
     var payload = text ? safeParseJson(text) : null;
 
     if(!response.ok){
-      var message = payload && payload.error ? payload.error : (text || '매칭 기록 API 호출에 실패했습니다.');
-      throw new Error(message);
+      throw new Error(payload && payload.error ? payload.error : (text || '매칭 기록 API 호출에 실패했습니다.'));
     }
 
     return payload || {};
   }
 
-  function safeParseJson(text){
-    try {
-      return JSON.parse(text);
-    } catch (error) {
-      return null;
-    }
-  }
-
   function listPending(sheetTitle){
     if(!config.matchHistoryEnabled){
-      return Promise.resolve(buildDisabledResponse('', { items: [] }));
+      return Promise.resolve(buildDisabledResponse('', { items: [], manualRules: [] }));
     }
 
-    var url = '/api/match-records?action=listPending&sheetTitle=' + encodeURIComponent(sheetTitle || '');
-    return apiFetch(url).then(function(payload){
-      if(payload && payload.enabled === false){
-        return buildDisabledResponse(payload.message, { items: [] });
-      }
-      return {
-        enabled: true,
-        items: Array.isArray(payload.items) ? payload.items : []
-      };
-    });
+    return apiFetch('/api/match-records?action=listPending&sheetTitle=' + encodeURIComponent(sheetTitle || ''))
+      .then(function(payload){
+        if(payload && payload.enabled === false){
+          return buildDisabledResponse(payload.message, { items: [], manualRules: [] });
+        }
+
+        return {
+          enabled: true,
+          items: Array.isArray(payload.items) ? payload.items : [],
+          manualRules: Array.isArray(payload.manualRules) ? payload.manualRules : []
+        };
+      });
   }
 
   function syncRun(payload){
@@ -74,26 +66,65 @@
         action: 'syncRun',
         payload: payload || {}
       })
-    }).then(function(response){
-      if(response && response.enabled === false){
-        return buildDisabledResponse(response.message, {
+    }).then(function(payload){
+      if(payload && payload.enabled === false){
+        return buildDisabledResponse(payload.message, {
           synced: false,
           openCount: 0,
           openedCount: 0,
           resolvedCount: 0
         });
       }
+
       return Object.assign({
         enabled: true,
         synced: true,
         openCount: 0,
         openedCount: 0,
         resolvedCount: 0
-      }, response || {});
+      }, payload || {});
     });
   }
 
+  function applyManualAction(payload){
+    return apiFetch('/api/match-records', {
+      method: 'POST',
+      headers: {
+        'Accept': 'application/json',
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({
+        action: 'applyManualAction',
+        payload: payload || {}
+      })
+    });
+  }
+
+  function getStorageOverview(){
+    return apiFetch('/api/match-records?action=getStorageOverview');
+  }
+
+  function getStoredSheetData(sheetTitle){
+    return apiFetch('/api/match-records?action=getStoredSheetData&sheetTitle=' + encodeURIComponent(sheetTitle || ''));
+  }
+
+  function health(){
+    return apiFetch('/api/match-records?action=health');
+  }
+
+  function safeParseJson(text){
+    try {
+      return JSON.parse(text);
+    } catch (error) {
+      return null;
+    }
+  }
+
   window.KakaoCheckHistory = {
+    applyManualAction: applyManualAction,
+    getStorageOverview: getStorageOverview,
+    getStoredSheetData: getStoredSheetData,
+    health: health,
     listPending: listPending,
     syncRun: syncRun
   };

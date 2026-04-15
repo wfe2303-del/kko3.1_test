@@ -27,7 +27,7 @@
   function assertOriginAllowed(){
     var currentOrigin = String(window.location.origin || '').replace(/\/$/, '');
     if(config.isAllowedOrigin(currentOrigin)) return;
-    throw new Error('허용되지 않은 배포 주소입니다: ' + currentOrigin);
+    throw new Error('허용되지 않은 배포 주소입니다. ' + currentOrigin);
   }
 
   function init(){
@@ -81,7 +81,6 @@
         password: String(password || '')
       })
     });
-
     var text = await response.text();
     var data = safeParseJson(text);
 
@@ -110,7 +109,9 @@
   }
 
   function requireToken(){
-    if(!currentUser) throw new Error('먼저 로그인해주세요.');
+    if(!currentUser){
+      throw new Error('먼저 로그인해 주세요.');
+    }
     return 'session';
   }
 
@@ -148,12 +149,12 @@
 
   window.KakaoCheckAuth = {
     init: init,
+    isInitialized: isInitialized,
     login: login,
-    revoke: revoke,
-    onChange: onChange,
-    requireToken: requireToken,
     getAccessToken: getAccessToken,
     getCurrentUser: getCurrentUser,
-    isInitialized: isInitialized
+    onChange: onChange,
+    requireToken: requireToken,
+    revoke: revoke
   };
 })();

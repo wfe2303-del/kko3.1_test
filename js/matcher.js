@@ -1,47 +1,62 @@
 (function(){
-  var utils = window.KakaoCheckUtils;
-  var parser = window.KakaoCheckParser;
   var config = window.KakaoCheckConfig;
+  var parser = window.KakaoCheckParser;
+  var utils = window.KakaoCheckUtils;
   var NAME_ONLY_SENTINEL = parser.NAME_ONLY_SENTINEL;
 
   function buildResult(rosterRows, parsed, options){
-    options = options || {};
-
-    var pendingItems = Array.isArray(options.pendingItems) ? options.pendingItems : [];
-    var summary = parser.summarizeActiveState(parsed.events);
-    var rosterIndex = buildRosterIndex(rosterRows);
+    var pendingItems;
+    var manualRules;
+    var summary;
+    var rosterIndex;
     var reportItems = [];
     var reportByRowNumber = new Map();
     var updates = [];
+    var currentUnmatchedItems;
+    var pendingResolution;
+    var manualResolution;
+    var report;
+    var reportEntered;
+    var reportLeft;
+    var reportMissing;
+    var extra;
+    var leavers;
 
-    rosterRows.forEach(function(row){
+    options = options || {};
+    pendingItems = Array.isArray(options.pendingItems) ? options.pendingItems : [];
+    manualRules = Array.isArray(options.manualRules) ? options.manualRules : [];
+    summary = parser.summarizeActiveState(parsed.events || []);
+    rosterIndex = buildRosterIndex(Array.isArray(rosterRows) ? rosterRows : []);
+
+    rosterIndex.rows.forEach(function(row){
       var item = buildRosterReportItem(row, summary, rosterIndex.nameCount);
       reportItems.push(item);
       reportByRowNumber.set(item.rowNumber, item);
       if(item.status === '입장'){
-        updates.push(makeStatusUpdate(row));
+        updates.push(createStatusUpdate(row));
       }
     });
 
-    var currentUnmatchedItems = buildCurrentUnmatchedItems(
+    currentUnmatchedItems = buildCurrentUnmatchedItems(
       summary.activeDigitsByName,
       rosterIndex,
-      String(options.sheetTitle || (rosterRows[0] && rosterRows[0].sheetTitle) || '').trim()
+      String(options.sheetTitle || (rosterIndex.rows[0] && rosterIndex.rows[0].sheetTitle) || '').trim()
     );
-    var pendingResolution = resolvePendingItems(pendingItems, rosterIndex, reportByRowNumber);
-    updates = dedupeUpdates(updates.concat(pendingResolution.updates));
 
-    var report = reportItems.map(reportItemToRow);
-    var reportEntered = reportItems.filter(isEntered).map(reportItemToRow);
-    var reportLeft = reportItems.filter(isLeft).map(reportItemToRow);
-    var reportMissing = reportItems.filter(isMissing).map(reportItemToRow);
+    pendingResolution = resolvePendingItems(pendingItems, rosterIndex, reportByRowNumber);
+    manualResolution = applyManualRules(currentUnmatchedItems, manualRules, rosterIndex, reportByRowNumber);
+    currentUnmatchedItems = manualResolution.remainingItems;
+    updates = dedupeUpdates(updates.concat(pendingResolution.updates, manualResolution.updates));
 
-    var extra = currentUnmatchedItems
+    report = reportItems.map(reportItemToRow);
+    reportEntered = reportItems.filter(isEntered).map(reportItemToRow);
+    reportLeft = reportItems.filter(isLeft).map(reportItemToRow);
+    reportMissing = reportItems.filter(isMissing).map(reportItemToRow);
+    extra = currentUnmatchedItems
       .filter(function(item){ return item.category === 'outside-roster'; })
       .map(function(item){ return [item.label]; })
       .sort(compareRow);
-
-    var leavers = buildLeavers(summary.leftFinalDigitsByName, summary.activeDigitsByName);
+    leavers = buildLeavers(summary.leftFinalDigitsByName, summary.activeDigitsByName);
 
     return {
       report: report,
@@ -49,6 +64,7 @@
       reportEntered: reportEntered,
       reportLeft: reportLeft,
       reportMissing: reportMissing,
+      missingRosterItems: reportItems.filter(isMissing).map(copyReportItem),
       extra: extra,
       leavers: leavers,
       currentUnmatchedItems: currentUnmatchedItems,
@@ -56,10 +72,13 @@
       pendingResolvedItems: pendingResolution.resolvedItems,
       pendingResolvedRows: pendingResolution.resolvedItems.map(pendingResolvedItemToRow),
       pendingRemainingItems: pendingResolution.remainingItems,
-      pendingRemainingRows: pendingResolution.remainingItems.map(currentUnmatchedItemToRow),
+      manualResolvedItems: manualResolution.resolvedItems,
+      manualResolvedRows: manualResolution.resolvedItems.map(manualResolvedItemToRow),
+      excludedByRuleItems: manualResolution.excludedItems,
+      excludedByRuleRows: manualResolution.excludedItems.map(excludedItemToRow),
       updates: updates,
-      joinedCount: parsed.joinedCount,
-      leftCount: parsed.leftCount,
+      joinedCount: Number(parsed.joinedCount || 0),
+      leftCount: Number(parsed.leftCount || 0),
       attendingCount: reportEntered.length,
       finalLeftCount: reportLeft.length,
       missingCount: reportMissing.length
@@ -68,17 +87,27 @@
 
   function buildRosterIndex(rosterRows){
     var byName = new Map();
+    var byRowNumber = new Map();
     var nameCount = new Map();
 
     rosterRows.forEach(function(row){
-      if(!row || !row.nameNormalized) return;
-      if(!byName.has(row.nameNormalized)) byName.set(row.nameNormalized, []);
-      byName.get(row.nameNormalized).push(row);
-      nameCount.set(row.nameNormalized, (nameCount.get(row.nameNormalized) || 0) + 1);
+      var key = row && row.nameNormalized;
+      if(!row) return;
+
+      byRowNumber.set(Number(row.rowNumber), row);
+      if(!key) return;
+
+      if(!byName.has(key)){
+        byName.set(key, []);
+      }
+      byName.get(key).push(row);
+      nameCount.set(key, (nameCount.get(key) || 0) + 1);
     });
 
     return {
+      rows: rosterRows.slice(),
       byName: byName,
+      byRowNumber: byRowNumber,
       nameCount: nameCount
     };
   }
@@ -88,7 +117,7 @@
     var phone4 = utils.last4Digits(row.phone);
     var activeSet = activeSummary.activeDigitsByName.get(nameKey) || new Set();
     var leftSet = activeSummary.leftFinalDigitsByName.get(nameKey) || new Set();
-    var isDup = (nameCount.get(nameKey) || 0) > 1;
+    var duplicateName = (nameCount.get(nameKey) || 0) > 1;
     var hasNameOnlyActive = activeSet.has(NAME_ONLY_SENTINEL);
     var hasNameOnlyLeft = leftSet.has(NAME_ONLY_SENTINEL);
     var hasExactActive = phone4 ? activeSet.has(phone4) : false;
@@ -96,28 +125,28 @@
     var hasAnyActive = activeSet.size > 0;
     var hasAnyLeft = leftSet.size > 0;
     var status = '미입장';
-    var notes = '';
     var matched = '';
+    var notes = '';
 
     if(!nameKey){
       return {
         rowNumber: row.rowNumber,
+        sheetTitle: row.sheetTitle,
         name: row.name,
         phone: row.phone,
         status: status,
         matched: matched,
-        notes: notes,
-        fromPending: false
+        notes: notes
       };
     }
 
-    if(isDup){
+    if(duplicateName){
       if(hasExactActive){
         status = '입장';
-        matched = formatPersonLabel(row.name, phone4);
+        matched = utils.formatPersonLabel(row.name, phone4);
       } else if(hasExactLeft){
         status = '퇴장';
-        matched = formatPersonLabel(row.name, phone4);
+        matched = utils.formatPersonLabel(row.name, phone4);
         notes = '최종 퇴장';
       } else if(hasNameOnlyActive && hasAnyActive){
         notes = '동명이인 / 번호 없음';
@@ -131,44 +160,49 @@
     } else {
       if(hasExactActive){
         status = '입장';
-        matched = formatPersonLabel(row.name, phone4);
+        matched = utils.formatPersonLabel(row.name, phone4);
       } else if(hasAnyActive){
         status = '입장';
         matched = hasNameOnlyActive
-          ? row.name
-          : formatPersonLabel(row.name, firstNonSentinel(activeSet));
-        if(hasNameOnlyActive) notes = '번호 없음';
+          ? String(row.name || '')
+          : utils.formatPersonLabel(row.name, firstNonSentinel(activeSet));
+        if(hasNameOnlyActive){
+          notes = '번호 없음';
+        }
       } else if(hasExactLeft){
         status = '퇴장';
-        matched = formatPersonLabel(row.name, phone4);
+        matched = utils.formatPersonLabel(row.name, phone4);
         notes = '최종 퇴장';
       } else if(hasAnyLeft){
         status = '퇴장';
         matched = hasNameOnlyLeft
-          ? row.name
-          : formatPersonLabel(row.name, firstNonSentinel(leftSet));
+          ? String(row.name || '')
+          : utils.formatPersonLabel(row.name, firstNonSentinel(leftSet));
         notes = hasNameOnlyLeft ? '번호 없음 / 최종 퇴장' : '최종 퇴장';
       }
     }
 
     return {
       rowNumber: row.rowNumber,
+      sheetTitle: row.sheetTitle,
       name: row.name,
       phone: row.phone,
       status: status,
       matched: matched,
-      notes: notes,
-      fromPending: false
+      notes: notes
     };
   }
 
   function buildCurrentUnmatchedItems(activeDigitsByName, rosterIndex, fallbackSheetTitle){
     var items = [];
 
-    activeDigitsByName.forEach(function(set, nameKey){
-      if(!nameKey || !set || !set.size) return;
-      var candidates = rosterIndex.byName.get(nameKey) || [];
-      Array.from(set).forEach(function(marker){
+    activeDigitsByName.forEach(function(markerSet, nameKey){
+      var candidates;
+      if(!nameKey || !markerSet || !markerSet.size) return;
+
+      candidates = rosterIndex.byName.get(nameKey) || [];
+      Array.from(markerSet).forEach(function(marker){
+        var exactMatches;
         if(!candidates.length){
           items.push(createQueueItem({
             sheetTitle: fallbackSheetTitle,
@@ -182,7 +216,9 @@
           return;
         }
 
-        if(candidates.length <= 1) return;
+        if(candidates.length <= 1){
+          return;
+        }
 
         if(marker === NAME_ONLY_SENTINEL){
           items.push(createQueueItem({
@@ -197,7 +233,7 @@
           return;
         }
 
-        var exactMatches = candidates.filter(function(row){
+        exactMatches = candidates.filter(function(row){
           return utils.last4Digits(row.phone) === marker;
         });
 
@@ -236,19 +272,19 @@
     pendingItems.forEach(function(rawItem){
       var item = normalizeQueueItem(rawItem);
       var resolution = resolvePendingItem(item, rosterIndex);
+      var reportItem;
 
       if(!resolution){
         remainingItems.push(item);
         return;
       }
 
-      var reportItem = reportByRowNumber.get(resolution.row.rowNumber);
+      reportItem = reportByRowNumber.get(Number(resolution.row.rowNumber));
       if(reportItem && reportItem.status === '미입장'){
         reportItem.status = '입장';
         reportItem.matched = resolution.label;
         reportItem.notes = mergeNotes(reportItem.notes, '이전 미매칭 재매칭');
-        reportItem.fromPending = true;
-        updates.push(makeStatusUpdate(resolution.row));
+        updates.push(createStatusUpdate(resolution.row));
       } else if(reportItem && reportItem.status === '입장'){
         reportItem.notes = mergeNotes(reportItem.notes, '이전 미매칭 재매칭');
       }
@@ -272,42 +308,148 @@
   }
 
   function resolvePendingItem(item, rosterIndex){
+    var candidates;
+    var only;
+    var rowPhone4;
+    var exactMatches;
+
     if(!item.nameNormalized) return null;
 
-    var candidates = rosterIndex.byName.get(item.nameNormalized) || [];
+    candidates = rosterIndex.byName.get(item.nameNormalized) || [];
     if(!candidates.length) return null;
 
     if(candidates.length === 1){
-      var only = candidates[0];
-      var rowPhone4 = utils.last4Digits(only.phone);
-      if(item.phone4 && rowPhone4 && rowPhone4 !== item.phone4) return null;
+      only = candidates[0];
+      rowPhone4 = utils.last4Digits(only.phone);
+      if(item.phone4 && rowPhone4 && rowPhone4 !== item.phone4){
+        return null;
+      }
       return {
         row: only,
-        label: formatPersonLabel(only.name, item.phone4 || rowPhone4)
+        label: utils.formatPersonLabel(only.name, item.phone4 || rowPhone4)
       };
     }
 
     if(!item.phone4) return null;
 
-    var exactMatches = candidates.filter(function(row){
+    exactMatches = candidates.filter(function(row){
       return utils.last4Digits(row.phone) === item.phone4;
     });
     if(exactMatches.length !== 1) return null;
 
     return {
       row: exactMatches[0],
-      label: formatPersonLabel(exactMatches[0].name, item.phone4)
+      label: utils.formatPersonLabel(exactMatches[0].name, item.phone4)
     };
+  }
+
+  function applyManualRules(currentUnmatchedItems, manualRules, rosterIndex, reportByRowNumber){
+    var rulesByQueueKey = new Map();
+    var remainingItems = [];
+    var resolvedItems = [];
+    var excludedItems = [];
+    var updates = [];
+
+    manualRules.forEach(function(rawRule){
+      var rule = normalizeManualRule(rawRule);
+      if(rule && rule.queueKey){
+        rulesByQueueKey.set(rule.queueKey, rule);
+      }
+    });
+
+    currentUnmatchedItems.forEach(function(item){
+      var rule = rulesByQueueKey.get(item.queueKey);
+      var targetRow;
+      var reportItem;
+      if(!rule){
+        remainingItems.push(item);
+        return;
+      }
+
+      if(rule.actionType === 'exclude-staff'){
+        excludedItems.push({
+          queueKey: item.queueKey,
+          label: item.label,
+          reason: rule.reason || '코칭스태프로 제외'
+        });
+        return;
+      }
+
+      if(rule.actionType !== 'match-student'){
+        remainingItems.push(item);
+        return;
+      }
+
+      targetRow = findManualTargetRow(rule, rosterIndex);
+      if(!targetRow){
+        remainingItems.push(item);
+        return;
+      }
+
+      reportItem = reportByRowNumber.get(Number(targetRow.rowNumber));
+      if(reportItem && reportItem.status === '미입장'){
+        reportItem.status = '입장';
+        reportItem.matched = rule.resolutionLabel || utils.formatPersonLabel(targetRow.name, targetRow.phone);
+        reportItem.notes = mergeNotes(reportItem.notes, '저장된 수동 매칭');
+        updates.push(createStatusUpdate(targetRow));
+      } else if(reportItem){
+        reportItem.notes = mergeNotes(reportItem.notes, '저장된 수동 매칭');
+      }
+
+      resolvedItems.push({
+        queueKey: item.queueKey,
+        rowNumber: targetRow.rowNumber,
+        name: targetRow.name,
+        phone: targetRow.phone,
+        label: item.label,
+        reason: rule.reason || '저장된 수동 매칭'
+      });
+    });
+
+    return {
+      remainingItems: remainingItems,
+      resolvedItems: resolvedItems,
+      excludedItems: excludedItems,
+      updates: dedupeUpdates(updates)
+    };
+  }
+
+  function findManualTargetRow(rule, rosterIndex){
+    var rowNumber = Number(rule.targetRowNumber || 0);
+    var row;
+    var candidates;
+    var exact;
+
+    if(rowNumber && rosterIndex.byRowNumber.has(rowNumber)){
+      return rosterIndex.byRowNumber.get(rowNumber);
+    }
+
+    if(!rule.targetNameNormalized) return null;
+
+    candidates = rosterIndex.byName.get(rule.targetNameNormalized) || [];
+    if(!candidates.length) return null;
+    if(candidates.length === 1) return candidates[0];
+
+    if(rule.targetPhone4){
+      exact = candidates.filter(function(candidate){
+        return utils.last4Digits(candidate.phone) === rule.targetPhone4;
+      });
+      if(exact.length === 1){
+        return exact[0];
+      }
+    }
+
+    return null;
   }
 
   function buildLeavers(leftFinalDigitsByName, activeDigitsByName){
     var leavers = [];
 
-    leftFinalDigitsByName.forEach(function(set, nameKey){
+    leftFinalDigitsByName.forEach(function(markerSet, nameKey){
       var activeSet = activeDigitsByName.get(nameKey);
-      set.forEach(function(value){
-        if(activeSet && activeSet.has(value)) return;
-        leavers.push([formatMarkerLabel(nameKey, value)]);
+      markerSet.forEach(function(marker){
+        if(activeSet && activeSet.has(marker)) return;
+        leavers.push([formatMarkerLabel(nameKey, marker)]);
       });
     });
 
@@ -329,13 +471,16 @@
       name: name,
       nameNormalized: nameNormalized,
       phone4: phone4,
-      label: String(data.label || formatPersonLabel(name || nameNormalized, phone4)).trim(),
+      label: String(data.label || utils.formatPersonLabel(name || nameNormalized, phone4)).trim(),
       reason: String(data.reason || '').trim()
     };
   }
 
   function normalizeQueueItem(rawItem){
-    if(!rawItem || typeof rawItem !== 'object') return createQueueItem({});
+    if(!rawItem || typeof rawItem !== 'object'){
+      return createQueueItem({});
+    }
+
     return createQueueItem({
       sheetTitle: rawItem.sheetTitle,
       category: rawItem.category,
@@ -345,6 +490,34 @@
       label: rawItem.label,
       reason: rawItem.reason
     });
+  }
+
+  function normalizeManualRule(rawRule){
+    var status;
+    var actionType;
+    if(!rawRule || typeof rawRule !== 'object') return null;
+
+    status = String(rawRule.status || '').trim();
+    actionType = String(rawRule.actionType || '').trim();
+
+    if(!actionType){
+      if(status === 'MANUAL_MATCH'){
+        actionType = 'match-student';
+      } else if(status === 'EXCLUDED_STAFF'){
+        actionType = 'exclude-staff';
+      }
+    }
+
+    return {
+      queueKey: String(rawRule.queueKey || '').trim(),
+      actionType: actionType,
+      reason: String(rawRule.reason || rawRule.resolutionLabel || '').trim(),
+      resolutionLabel: String(rawRule.resolutionLabel || '').trim(),
+      targetRowNumber: Number(rawRule.targetRowNumber || rawRule.resolutionTargetRow || 0),
+      targetName: String(rawRule.targetName || rawRule.resolutionTargetName || '').trim(),
+      targetNameNormalized: utils.normalizeName(rawRule.targetName || rawRule.resolutionTargetName || ''),
+      targetPhone4: utils.last4Digits(rawRule.targetPhone4 || rawRule.resolutionTargetPhone || '')
+    };
   }
 
   function dedupeQueueItems(items){
@@ -374,10 +547,11 @@
     ].join('::');
   }
 
-  function makeStatusUpdate(row){
+  function createStatusUpdate(row){
+    var sheetTitle = config.escapeSheetTitle(row.sheetTitle);
     return {
       rowNumber: row.rowNumber,
-      range: row.sheetTitle + '!' + config.columns.status + row.rowNumber,
+      range: sheetTitle + '!' + config.columns.status + row.rowNumber,
       values: [[config.statusText]]
     };
   }
@@ -394,32 +568,35 @@
     return [item.rowNumber, item.name, item.phone, item.label, item.reason];
   }
 
+  function manualResolvedItemToRow(item){
+    return [item.rowNumber, item.name, item.phone, item.label, item.reason];
+  }
+
+  function excludedItemToRow(item){
+    return [item.label, item.reason];
+  }
+
   function formatMarkerLabel(name, marker){
-    if(marker && marker !== NAME_ONLY_SENTINEL){
-      return formatPersonLabel(name, marker);
-    }
-    return String(name || '').trim();
+    return marker && marker !== NAME_ONLY_SENTINEL
+      ? utils.formatPersonLabel(name, marker)
+      : String(name || '').trim();
   }
 
-  function formatPersonLabel(name, phone4){
-    var displayName = String(name || '').trim();
-    var digits = utils.last4Digits(phone4);
-    return digits ? displayName + '/' + digits : displayName;
-  }
-
-  function firstNonSentinel(set){
-    var values = Array.from(set || []);
-    for(var i = 0; i < values.length; i += 1){
-      if(values[i] !== NAME_ONLY_SENTINEL) return values[i];
+  function firstNonSentinel(markerSet){
+    var values = Array.from(markerSet || []);
+    var index;
+    for(index = 0; index < values.length; index += 1){
+      if(values[index] !== NAME_ONLY_SENTINEL){
+        return values[index];
+      }
     }
     return '';
   }
 
   function mergeNotes(existing, incoming){
-    var values = [existing, incoming]
-      .map(function(value){ return String(value || '').trim(); })
-      .filter(Boolean);
-    return Array.from(new Set(values)).join(' / ');
+    return Array.from(new Set([existing, incoming].map(function(value){
+      return String(value || '').trim();
+    }).filter(Boolean))).join(' / ');
   }
 
   function getCategoryLabel(category){
@@ -427,18 +604,42 @@
     if(category === 'duplicate-name-no-number') return '동명이인 / 번호 없음';
     if(category === 'duplicate-name-mismatch') return '동명이인 / 번호 불일치';
     if(category === 'duplicate-name-collision') return '동명이인 / 번호 중복';
-    return category || '';
+    return String(category || '').trim();
   }
 
-  function isEntered(item){ return item.status === '입장'; }
-  function isLeft(item){ return item.status === '퇴장'; }
-  function isMissing(item){ return item.status === '미입장'; }
+  function copyReportItem(item){
+    return {
+      rowNumber: item.rowNumber,
+      sheetTitle: item.sheetTitle,
+      name: item.name,
+      phone: item.phone,
+      status: item.status,
+      matched: item.matched,
+      notes: item.notes
+    };
+  }
 
-  function compareRow(a, b){
-    return String(a[0] || '').localeCompare(String(b[0] || ''), 'ko');
+  function isEntered(item){
+    return item.status === '입장';
+  }
+
+  function isLeft(item){
+    return item.status === '퇴장';
+  }
+
+  function isMissing(item){
+    return item.status === '미입장';
+  }
+
+  function compareRow(left, right){
+    return String(left[0] || '').localeCompare(String(right[0] || ''), 'ko');
   }
 
   window.KakaoCheckMatcher = {
-    buildResult: buildResult
+    buildQueueKey: buildQueueKey,
+    buildResult: buildResult,
+    createStatusUpdate: createStatusUpdate,
+    normalizeManualRule: normalizeManualRule,
+    normalizeQueueItem: normalizeQueueItem
   };
 })();

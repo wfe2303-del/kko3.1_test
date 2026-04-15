@@ -2,9 +2,11 @@ var auth = require('./_lib/auth');
 var appsScript = require('./_lib/apps-script');
 
 module.exports = async function handler(req, res) {
+  var session = auth.getSession(req);
+  var action = getAction(req);
+
   setJsonHeaders(res);
 
-  var session = auth.getSession(req);
   if(!session.configured){
     res.statusCode = 503;
     res.end(JSON.stringify({ error: 'Login is not configured. Set KAKAO_CHECK_SESSION_SECRET and KAKAO_CHECK_USERS_JSON.' }));
@@ -19,64 +21,39 @@ module.exports = async function handler(req, res) {
 
   if(!appsScript.isConfigured()){
     res.statusCode = 200;
-    res.end(JSON.stringify(buildDisabledResponse(getAction(req))));
+    res.end(JSON.stringify(buildDisabledResponse(action)));
     return;
   }
 
   try {
-    var action = getAction(req);
-
     if(req.method !== 'GET' && req.method !== 'POST'){
       res.statusCode = 405;
-      res.end(JSON.stringify({ error: 'Method not allowed' }));
+      res.end(JSON.stringify({ error: 'Method not allowed.' }));
       return;
     }
 
     if(action === 'listPending'){
-      var payload = {
-        sheetTitle: String((req.query && req.query.sheetTitle) || '').trim()
-      };
-
-      if(payload.sheetTitle && !auth.canAccessSheet(session.user, payload.sheetTitle)){
-        res.statusCode = 403;
-        res.end(JSON.stringify({ error: 'You do not have access to this sheet.' }));
-        return;
-      }
-
-      var listResponse = await appsScript.callAppsScript('listPending', payload);
-      if(listResponse && Array.isArray(listResponse.items)){
-        listResponse.items = listResponse.items.filter(function(item){
-          return auth.canAccessSheet(session.user, item && item.sheetTitle);
-        });
-      }
-      res.statusCode = 200;
-      res.end(JSON.stringify(listResponse || { enabled: true, items: [] }));
+      await handleListPending(req, res, session.user);
       return;
     }
 
     if(action === 'syncRun'){
-      if(!session.user.canWrite){
-        res.statusCode = 403;
-        res.end(JSON.stringify({ error: 'This account cannot save attendance records.' }));
-        return;
-      }
+      await handleSyncRun(req, res, session.user);
+      return;
+    }
 
-      var body = readBody(req);
-      var syncPayload = body.payload || {};
-      var sheetTitle = String(syncPayload.sheetTitle || '').trim();
+    if(action === 'applyManualAction'){
+      await handleApplyManualAction(req, res, session.user);
+      return;
+    }
 
-      if(sheetTitle && !auth.canAccessSheet(session.user, sheetTitle)){
-        res.statusCode = 403;
-        res.end(JSON.stringify({ error: 'You do not have access to this sheet.' }));
-        return;
-      }
+    if(action === 'getStorageOverview'){
+      await handleStorageOverview(res, session.user);
+      return;
+    }
 
-      syncPayload.actorEmail = session.user.username;
-      syncPayload.actorName = session.user.displayName;
-
-      var syncResponse = await appsScript.callAppsScript('syncRun', syncPayload);
-      res.statusCode = 200;
-      res.end(JSON.stringify(syncResponse || { enabled: true, synced: true }));
+    if(action === 'getStoredSheetData'){
+      await handleStoredSheetData(req, res, session.user);
       return;
     }
 
@@ -96,6 +73,125 @@ module.exports = async function handler(req, res) {
     }));
   }
 };
+
+async function handleListPending(req, res, user){
+  var sheetTitle = String((req.query && req.query.sheetTitle) || '').trim();
+  var response;
+
+  if(sheetTitle && !auth.canAccessSheet(user, sheetTitle)){
+    res.statusCode = 403;
+    res.end(JSON.stringify({ error: 'You do not have access to this sheet.' }));
+    return;
+  }
+
+  response = await appsScript.callAppsScript('listPending', { sheetTitle: sheetTitle });
+  response.items = filterSheetEntries(response.items, user);
+  response.manualRules = filterSheetEntries(response.manualRules, user);
+  res.statusCode = 200;
+  res.end(JSON.stringify(response || { enabled: true, items: [], manualRules: [] }));
+}
+
+async function handleSyncRun(req, res, user){
+  var body = readBody(req);
+  var payload = body.payload || {};
+  var sheetTitle = String(payload.sheetTitle || '').trim();
+  var response;
+
+  if(!user.canWrite){
+    res.statusCode = 403;
+    res.end(JSON.stringify({ error: 'This account cannot save attendance records.' }));
+    return;
+  }
+
+  if(sheetTitle && !auth.canAccessSheet(user, sheetTitle)){
+    res.statusCode = 403;
+    res.end(JSON.stringify({ error: 'You do not have access to this sheet.' }));
+    return;
+  }
+
+  payload.actorEmail = user.username;
+  payload.actorName = user.displayName;
+
+  response = await appsScript.callAppsScript('syncRun', payload);
+  res.statusCode = 200;
+  res.end(JSON.stringify(response || { enabled: true, synced: true }));
+}
+
+async function handleApplyManualAction(req, res, user){
+  var body = readBody(req);
+  var payload = body.payload || {};
+  var sheetTitle = String(payload.sheetTitle || '').trim();
+  var response;
+
+  if(!user.canWrite){
+    res.statusCode = 403;
+    res.end(JSON.stringify({ error: 'This account cannot save attendance records.' }));
+    return;
+  }
+
+  if(sheetTitle && !auth.canAccessSheet(user, sheetTitle)){
+    res.statusCode = 403;
+    res.end(JSON.stringify({ error: 'You do not have access to this sheet.' }));
+    return;
+  }
+
+  payload.actorEmail = user.username;
+  payload.actorName = user.displayName;
+  response = await appsScript.callAppsScript('applyManualAction', payload);
+  res.statusCode = 200;
+  res.end(JSON.stringify(response || { enabled: true }));
+}
+
+async function handleStorageOverview(res, user){
+  var response = await appsScript.callAppsScript('getStorageOverview', {});
+  var sheets = Array.isArray(response.sheets) ? response.sheets.filter(function(item){
+    return auth.canAccessSheet(user, item && item.sheetTitle);
+  }) : [];
+
+  res.statusCode = 200;
+  res.end(JSON.stringify({
+    enabled: true,
+    sheets: sheets,
+    totalOpenCount: sheets.reduce(sumField('openCount'), 0),
+    totalManualRuleCount: sheets.reduce(sumField('manualRuleCount'), 0),
+    lastSavedAt: getLatestValue(sheets, 'lastSavedAt')
+  }));
+}
+
+async function handleStoredSheetData(req, res, user){
+  var sheetTitle = String((req.query && req.query.sheetTitle) || '').trim();
+  var response;
+
+  if(!sheetTitle || !auth.canAccessSheet(user, sheetTitle)){
+    res.statusCode = 403;
+    res.end(JSON.stringify({ error: 'You do not have access to this sheet.' }));
+    return;
+  }
+
+  response = await appsScript.callAppsScript('getStoredSheetData', { sheetTitle: sheetTitle });
+  res.statusCode = 200;
+  res.end(JSON.stringify(response || { enabled: true, summary: {}, runs: [], queueItems: [] }));
+}
+
+function filterSheetEntries(items, user){
+  return (Array.isArray(items) ? items : []).filter(function(item){
+    return auth.canAccessSheet(user, item && item.sheetTitle);
+  });
+}
+
+function sumField(field){
+  return function(total, item){
+    return total + Number(item && item[field] || 0);
+  };
+}
+
+function getLatestValue(items, field){
+  return (items || []).reduce(function(latest, item){
+    var value = String(item && item[field] || '').trim();
+    if(!value) return latest;
+    return !latest || value > latest ? value : latest;
+  }, '');
+}
 
 function getAction(req){
   if(req.method === 'GET'){
@@ -121,7 +217,8 @@ function buildDisabledResponse(action){
     return {
       enabled: false,
       message: 'Match history backend is not configured.',
-      items: []
+      items: [],
+      manualRules: []
     };
   }
 
@@ -133,6 +230,17 @@ function buildDisabledResponse(action){
       openCount: 0,
       openedCount: 0,
       resolvedCount: 0
+    };
+  }
+
+  if(action === 'getStorageOverview' || action === 'getStoredSheetData'){
+    return {
+      enabled: false,
+      message: 'Match history backend is not configured.',
+      sheets: [],
+      summary: {},
+      runs: [],
+      queueItems: []
     };
   }
 

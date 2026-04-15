@@ -4,7 +4,10 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <meta name="referrer" content="no-referrer" />
-  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; connect-src 'self'; img-src 'self' data: https:; style-src 'self'; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'; upgrade-insecure-requests" />
+  <meta
+    http-equiv="Content-Security-Policy"
+    content="default-src 'self'; script-src 'self'; connect-src 'self'; img-src 'self' data: https:; style-src 'self'; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'; upgrade-insecure-requests"
+  />
   <title>카카오 입장 체크</title>
   <link rel="stylesheet" href="./styles.css" />
 </head>
@@ -34,13 +37,16 @@
       </div>
       <div class="topbar-actions">
         <span id="topbarUser" class="topbar-user hidden"></span>
-        <button id="logoutBtn" class="btn" type="button">로그아웃</button>
+        <button id="logoutBtn" class="btn hidden" type="button">로그아웃</button>
       </div>
     </header>
+
+    <section id="appNotice" class="card app-notice hidden"></section>
 
     <section class="card toolbar-card">
       <div class="toolbar-row">
         <button id="refreshTabsBtn" class="btn" type="button">시트 목록 새로고침</button>
+        <button id="backendDataBtn" class="btn" type="button">서버 저장 데이터 보기</button>
         <button id="addPanelBtn" class="btn btn-primary" type="button">패널 추가</button>
       </div>
     </section>
@@ -52,7 +58,7 @@
     <section class="card panel-card">
       <div class="panel-head">
         <div>
-          <h2 class="panel-title"></h2>
+          <h2 class="panel-title">시트를 선택해주세요</h2>
         </div>
         <button class="btn btn-danger panel-remove-btn" type="button">패널 제거</button>
       </div>
@@ -82,6 +88,11 @@
         </label>
         <button class="btn btn-primary js-run-btn" type="button">실행</button>
         <button class="btn js-demo-btn" type="button">데모</button>
+      </div>
+
+      <div class="panel-secondary-actions">
+        <button class="btn js-manual-review-btn" type="button" disabled>미매칭 수동 처리</button>
+        <button class="btn js-storage-data-btn" type="button" disabled>이 시트 저장 데이터 보기</button>
       </div>
 
       <div class="panel-meta hidden">

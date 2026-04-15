@@ -29,9 +29,9 @@
   }
 
   function validateConfig(config){
-    var problems = [];
     var currentOrigin = normalizeOrigin(window.location.origin);
     var allowedOrigins = (config.allowedOrigins || []).map(normalizeOrigin);
+    var problems = [];
 
     if(!allowedOrigins.length){
       problems.push('allowedOrigins missing');
@@ -63,6 +63,15 @@
     return String(value || '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
   }
 
+  function escapeSheetTitle(title){
+    var value = String(title || '').trim();
+    if(!value) return '';
+    if(/[!' ]/.test(value)){
+      return "'" + value.replace(/'/g, "''") + "'";
+    }
+    return value;
+  }
+
   var config = {
     startRow: 2,
     columns: Object.freeze({
@@ -73,6 +82,7 @@
     }),
     targetRoleText: '수강생',
     statusText: '입장',
+    escapeSheetTitle: escapeSheetTitle,
     assertRuntimeReady: function(){
       return Promise.resolve(runtimeReady).then(function(){
         validateConfig(getMergedConfig());
@@ -85,8 +95,16 @@
   };
 
   Object.defineProperties(config, {
-    matchHistoryEnabled: { get: function(){ return getMergedConfig().matchHistoryEnabled; } },
-    allowedOrigins: { get: function(){ return Object.freeze(getMergedConfig().allowedOrigins.slice()); } }
+    matchHistoryEnabled: {
+      get: function(){
+        return getMergedConfig().matchHistoryEnabled;
+      }
+    },
+    allowedOrigins: {
+      get: function(){
+        return Object.freeze(getMergedConfig().allowedOrigins.slice());
+      }
+    }
   });
 
   Object.freeze(config);

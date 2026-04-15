@@ -19,31 +19,47 @@
     els.overlay.dataset.bound = '1';
     els.closeBtn.addEventListener('click', closeModal);
     els.overlay.addEventListener('click', function(event){
-      if(event.target === els.overlay) closeModal();
+      if(event.target === els.overlay){
+        closeModal();
+      }
     });
     document.addEventListener('keydown', function(event){
-      if(event.key === 'Escape' && modalState) closeModal();
+      if(event.key === 'Escape' && modalState){
+        closeModal();
+      }
     });
   }
 
   function openModal(title, subtitle){
+    var els;
     bindModalShell();
-    var els = modalEls();
+    els = modalEls();
     els.title.textContent = title || '';
     els.subtitle.textContent = subtitle || '';
     els.body.innerHTML = '';
     els.overlay.classList.remove('hidden');
     els.overlay.setAttribute('aria-hidden', 'false');
+    return els.body;
   }
 
   function closeModal(){
     var els = modalEls();
     if(!els.overlay) return;
-
     els.overlay.classList.add('hidden');
     els.overlay.setAttribute('aria-hidden', 'true');
     els.body.innerHTML = '';
     modalState = null;
+  }
+
+  function openCustomModal(options){
+    var body = openModal(options.title || '', options.subtitle || '');
+    modalState = {
+      type: options.type || 'custom',
+      panelId: options.panelId || null
+    };
+    if(typeof options.render === 'function'){
+      options.render(body);
+    }
   }
 
   function getModalState(){
@@ -51,11 +67,11 @@
   }
 
   function setAuthState(state){
+    var isLoggedIn = !!(state && state.user && state.accessToken);
     var loginScreen = document.getElementById('loginScreen');
     var appShell = document.getElementById('appShell');
     var logoutBtn = document.getElementById('logoutBtn');
     var topbarUser = document.getElementById('topbarUser');
-    var isLoggedIn = !!(state && state.user && state.accessToken);
 
     if(loginScreen) loginScreen.classList.toggle('hidden', isLoggedIn);
     if(appShell) appShell.classList.toggle('hidden', !isLoggedIn);
@@ -81,14 +97,29 @@
 
   function setAuthError(message){
     var authErr = document.getElementById('authErr');
-    if(authErr) authErr.textContent = message || '';
+    if(authErr){
+      authErr.textContent = message || '';
+    }
+  }
+
+  function setAppNotice(message, kind){
+    var notice = document.getElementById('appNotice');
+    if(!notice) return;
+
+    if(!message){
+      notice.className = 'card app-notice hidden';
+      notice.textContent = '';
+      return;
+    }
+
+    notice.className = 'card app-notice ' + (kind || 'warn');
+    notice.textContent = message;
   }
 
   function createPanelElement(panelId){
     var template = document.getElementById('panelTemplate');
     var node = template.content.firstElementChild.cloneNode(true);
     node.dataset.panelId = String(panelId);
-    utils.qs('.panel-title', node).textContent = '시트를 선택해주세요';
     return node;
   }
 
@@ -110,12 +141,7 @@
       return;
     }
 
-    if(files.length === 1){
-      summary.textContent = files[0].name;
-      return;
-    }
-
-    summary.textContent = files.length + '개 파일';
+    summary.textContent = files.length === 1 ? files[0].name : (files.length + '개 파일');
   }
 
   function setPanelStatus(panelEl, message, kind){
@@ -137,44 +163,62 @@
 
   function setPanelError(panelEl, message){
     var errorBox = utils.qs('.js-panel-error', panelEl);
-    if(errorBox) errorBox.textContent = message || '';
+    if(errorBox){
+      errorBox.textContent = message || '';
+    }
+  }
+
+  function setPanelActionState(panelEl, state){
+    var manualBtn = utils.qs('.js-manual-review-btn', panelEl);
+    var storageBtn = utils.qs('.js-storage-data-btn', panelEl);
+
+    if(manualBtn){
+      manualBtn.disabled = !state.manualEnabled;
+      manualBtn.textContent = state.manualLabel || '미매칭 수동 처리';
+    }
+
+    if(storageBtn){
+      storageBtn.disabled = !state.storageEnabled;
+    }
   }
 
   function renderResults(panelEl, sections){
     var root = utils.qs('.js-panel-results', panelEl);
-    if(!root) return;
+    var summarySection = null;
+    var tableSections = [];
 
+    if(!root) return;
     root.innerHTML = '';
-    if(!sections.length){
-      root.innerHTML = '<div class="empty-state">결과가 없습니다.</div>';
+
+    if(!sections || !sections.length){
+      appendEmptyState(root, '결과가 없습니다.');
       return;
     }
 
-    var summarySection = null;
-    var listSections = [];
-
     sections.forEach(function(section){
-      if(section.title === '로그 요약') summarySection = section;
-      else listSections.push(section);
+      if(section && section.summary){
+        summarySection = section;
+      } else if(section){
+        tableSections.push(section);
+      }
     });
 
-    if(listSections.length){
+    if(tableSections.length){
       var buttonGrid = document.createElement('div');
       buttonGrid.className = 'result-button-grid';
 
-      listSections.forEach(function(section){
+      tableSections.forEach(function(section){
         var button = document.createElement('button');
+        var labelWrap = document.createElement('span');
+        var badge = document.createElement('span');
+
         button.type = 'button';
         button.className = 'result-open-btn';
-
-        var titleWrap = document.createElement('span');
-        titleWrap.textContent = section.title;
-
-        var badge = document.createElement('span');
+        labelWrap.textContent = section.title;
         badge.className = 'result-count-badge';
         badge.textContent = String(section.rows ? section.rows.length : 0);
 
-        button.appendChild(titleWrap);
+        button.appendChild(labelWrap);
         button.appendChild(badge);
         button.addEventListener('click', function(){
           openSectionResultModal(section);
@@ -185,91 +229,62 @@
       root.appendChild(buttonGrid);
     }
 
-    if(summarySection && summarySection.rows && summarySection.rows[0]){
-      var summaryCard = document.createElement('div');
-      summaryCard.className = 'result-summary-card';
-
-      var title = document.createElement('h3');
-      title.className = 'result-summary-title';
-      title.textContent = summarySection.title;
-      summaryCard.appendChild(title);
-
-      var summaryGrid = document.createElement('div');
-      summaryGrid.className = 'result-summary-grid';
-
-      summarySection.headers.forEach(function(header, index){
-        var stat = document.createElement('div');
-        stat.className = 'result-stat';
-
-        var label = document.createElement('span');
-        label.className = 'result-stat-label';
-        label.textContent = header;
-
-        var value = document.createElement('strong');
-        value.className = 'result-stat-value';
-        value.textContent = summarySection.rows[0][index] == null ? '' : String(summarySection.rows[0][index]);
-
-        stat.appendChild(label);
-        stat.appendChild(value);
-        summaryGrid.appendChild(stat);
-      });
-
-      summaryCard.appendChild(summaryGrid);
-      root.appendChild(summaryCard);
+    if(summarySection){
+      root.appendChild(buildMetricGrid(summarySection.summary || []));
     }
   }
 
   function openSectionResultModal(section){
-    openModal(section.title, section.rows && section.rows.length ? section.rows.length + '건' : '데이터 없음');
-    modalState = { type: 'result-section', title: section.title };
+    openCustomModal({
+      type: 'result-section',
+      title: section.title,
+      subtitle: section.rows && section.rows.length ? (section.rows.length + '건') : '데이터 없음',
+      render: function(body){
+        if(section.groups && section.groups.length){
+          renderGroupedSection(body, section);
+          return;
+        }
 
-    var els = modalEls();
+        if(!section.rows || !section.rows.length){
+          appendEmptyState(body, '데이터가 없습니다.');
+          return;
+        }
 
-    if(section.groups && section.groups.length){
-      renderGroupedSectionModal(els.body, section);
-      return;
-    }
-
-    if(!section.rows || !section.rows.length){
-      var empty = document.createElement('div');
-      empty.className = 'empty-state';
-      empty.textContent = '데이터 없음';
-      els.body.appendChild(empty);
-      return;
-    }
-
-    els.body.appendChild(buildTableWrap(section.headers || [], section.rows || []));
+        body.appendChild(buildTableWrap(section.headers || [], section.rows || []));
+      }
+    });
   }
 
-  function renderGroupedSectionModal(root, section){
+  function renderGroupedSection(root, section){
     var groups = section.groups || [];
     var activeKey = groups[0] ? groups[0].key : '';
     var filterRow = document.createElement('div');
-    filterRow.className = 'result-filter-row';
     var content = document.createElement('div');
 
+    filterRow.className = 'result-filter-row';
+
     function draw(){
+      var current = groups.find(function(group){
+        return group.key === activeKey;
+      }) || groups[0];
+
       filterRow.innerHTML = '';
       content.innerHTML = '';
 
       groups.forEach(function(group){
-        var btn = document.createElement('button');
-        btn.type = 'button';
-        btn.className = 'result-filter-btn' + (group.key === activeKey ? ' active' : '');
-        btn.textContent = group.label + ' ' + (group.rows ? group.rows.length : 0);
-        btn.addEventListener('click', function(){
+        var button = document.createElement('button');
+        button.type = 'button';
+        button.className = 'result-filter-btn' + (group.key === activeKey ? ' active' : '');
+        button.textContent = group.label + ' ' + (group.rows ? group.rows.length : 0);
+        button.addEventListener('click', function(){
           activeKey = group.key;
           draw();
         });
-        filterRow.appendChild(btn);
+        filterRow.appendChild(button);
       });
 
-      var current = groups.find(function(group){ return group.key === activeKey; }) || groups[0];
       if(!current || !current.rows || !current.rows.length){
-        var empty = document.createElement('div');
-        empty.className = 'empty-state';
-        empty.textContent = '데이터 없음';
-        content.appendChild(empty);
+        appendEmptyState(content, '데이터가 없습니다.');
         return;
       }
 
@@ -283,22 +298,21 @@
 
   function buildTableWrap(headers, rows){
     var wrap = document.createElement('div');
-    wrap.className = 'table-wrap';
-
     var table = document.createElement('table');
     var thead = document.createElement('thead');
     var headerRow = document.createElement('tr');
+    var tbody = document.createElement('tbody');
+
+    wrap.className = 'table-wrap';
 
     headers.forEach(function(header){
       var th = document.createElement('th');
       th.textContent = header;
       headerRow.appendChild(th);
     });
-
     thead.appendChild(headerRow);
     table.appendChild(thead);
 
-    var tbody = document.createElement('tbody');
     rows.forEach(function(row){
       var tr = document.createElement('tr');
       row.forEach(function(cell){
@@ -314,132 +328,162 @@
     return wrap;
   }
 
+  function buildMetricGrid(items){
+    var grid = document.createElement('div');
+    grid.className = 'metric-grid';
+
+    items.forEach(function(item){
+      var card = document.createElement('div');
+      var label = document.createElement('span');
+      var value = document.createElement('strong');
+
+      card.className = 'metric-card';
+      label.className = 'metric-label';
+      value.className = 'metric-value';
+      label.textContent = item.label || '';
+      value.textContent = item.value == null ? '' : String(item.value);
+
+      card.appendChild(label);
+      card.appendChild(value);
+      grid.appendChild(card);
+    });
+
+    return grid;
+  }
+
+  function appendEmptyState(root, message){
+    var empty = document.createElement('div');
+    empty.className = 'empty-state';
+    empty.textContent = message || '데이터가 없습니다.';
+    root.appendChild(empty);
+  }
+
   function openSheetPickerModal(options){
-    openModal(options.title || '시트 선택', options.subtitle || '');
-    modalState = { type: 'sheet-picker', panelId: options.panelId };
+    openCustomModal({
+      type: 'sheet-picker',
+      panelId: options.panelId,
+      title: options.title || '시트 선택',
+      subtitle: options.subtitle || '',
+      render: function(body){
+        var search = document.createElement('input');
+        var list = document.createElement('div');
 
-    var els = modalEls();
-    var search = document.createElement('input');
-    search.className = 'input modal-search';
-    search.type = 'text';
-    search.placeholder = '시트 이름 검색';
-    search.value = options.initialQuery || '';
+        search.className = 'input modal-search';
+        search.type = 'text';
+        search.placeholder = '시트 이름 검색';
+        search.value = options.initialQuery || '';
 
-    var list = document.createElement('div');
-    list.className = 'modal-list';
+        list.className = 'modal-list';
 
-    function renderList(){
-      var query = String(search.value || '').trim().toLowerCase();
-      list.innerHTML = '';
+        function renderList(){
+          var query = String(search.value || '').trim().toLowerCase();
+          var filtered = (options.titles || []).filter(function(title){
+            return !query || title.toLowerCase().indexOf(query) >= 0;
+          });
 
-      var filtered = (options.titles || []).filter(function(title){
-        return !query || title.toLowerCase().indexOf(query) >= 0;
-      });
+          list.innerHTML = '';
+          if(!filtered.length){
+            appendEmptyState(list, options.emptyText || '검색 결과가 없습니다.');
+            return;
+          }
 
-      if(!filtered.length){
-        var empty = document.createElement('div');
-        empty.className = 'file-empty';
-        empty.textContent = '검색 결과가 없습니다.';
-        list.appendChild(empty);
-        return;
+          filtered.forEach(function(title){
+            var button = document.createElement('button');
+            button.type = 'button';
+            button.className = 'modal-list-btn' + (title === options.selectedTitle ? ' active' : '');
+            button.textContent = title;
+            button.addEventListener('click', function(){
+              options.onSelect(title);
+              closeModal();
+            });
+            list.appendChild(button);
+          });
+        }
+
+        search.addEventListener('input', renderList);
+        body.appendChild(search);
+        body.appendChild(list);
+        renderList();
       }
-
-      filtered.forEach(function(titleText){
-        var btn = document.createElement('button');
-        btn.type = 'button';
-        btn.className = 'modal-list-btn' + (titleText === options.selectedTitle ? ' active' : '');
-        btn.textContent = titleText;
-        btn.addEventListener('click', function(){
-          options.onSelect(titleText);
-          closeModal();
-        });
-        list.appendChild(btn);
-      });
-    }
-
-    search.addEventListener('input', renderList);
-    els.body.appendChild(search);
-    els.body.appendChild(list);
-    renderList();
+    });
   }
 
   function openFileManagerModal(options){
-    openModal(options.title || '로그 파일 관리', options.subtitle || '');
-    modalState = { type: 'file-manager', panelId: options.panelId };
+    openCustomModal({
+      type: 'file-manager',
+      panelId: options.panelId,
+      title: options.title || '로그 파일 관리',
+      subtitle: options.subtitle || '',
+      render: function(body){
+        var actions = document.createElement('div');
+        var addBtn = document.createElement('button');
+        var clearBtn = document.createElement('button');
+        var list = document.createElement('div');
 
-    var els = modalEls();
-    var actions = document.createElement('div');
-    actions.className = 'file-manager-actions';
+        actions.className = 'file-manager-actions';
+        addBtn.type = 'button';
+        addBtn.className = 'btn btn-primary';
+        addBtn.textContent = '파일 추가';
+        addBtn.addEventListener('click', function(){
+          options.onAddRequest();
+        });
 
-    var addBtn = document.createElement('button');
-    addBtn.type = 'button';
-    addBtn.className = 'btn btn-primary';
-    addBtn.textContent = '파일 추가';
-    addBtn.addEventListener('click', function(){ options.onAddRequest(); });
-    actions.appendChild(addBtn);
-
-    var clearBtn = document.createElement('button');
-    clearBtn.type = 'button';
-    clearBtn.className = 'btn';
-    clearBtn.textContent = '전체 비우기';
-    clearBtn.addEventListener('click', function(){
-      options.onClearAll();
-      openFileManagerModal(options.getFreshOptions());
-    });
-    actions.appendChild(clearBtn);
-
-    els.body.appendChild(actions);
-
-    var list = document.createElement('div');
-    list.className = 'modal-list';
-
-    if(!options.files || !options.files.length){
-      var empty = document.createElement('div');
-      empty.className = 'file-empty';
-      empty.textContent = '추가된 로그 파일이 없습니다.';
-      list.appendChild(empty);
-    } else {
-      options.files.forEach(function(file, index){
-        var item = document.createElement('div');
-        item.className = 'file-item';
-
-        var main = document.createElement('div');
-        main.className = 'file-item-main';
-
-        var fileName = document.createElement('div');
-        fileName.className = 'file-name';
-        fileName.textContent = file.name;
-
-        var meta = document.createElement('div');
-        meta.className = 'file-meta';
-        meta.textContent = formatBytes(file.size) + ' · ' + new Date(file.lastModified || Date.now()).toLocaleString();
-
-        main.appendChild(fileName);
-        main.appendChild(meta);
-        item.appendChild(main);
-
-        var removeBtn = document.createElement('button');
-        removeBtn.type = 'button';
-        removeBtn.className = 'btn btn-danger';
-        removeBtn.textContent = '제거';
-        removeBtn.addEventListener('click', function(){
-          options.onRemoveIndex(index);
+        clearBtn.type = 'button';
+        clearBtn.className = 'btn';
+        clearBtn.textContent = '전체 비우기';
+        clearBtn.addEventListener('click', function(){
+          options.onClearAll();
           openFileManagerModal(options.getFreshOptions());
         });
-        item.appendChild(removeBtn);
 
-        list.appendChild(item);
-      });
-    }
+        actions.appendChild(addBtn);
+        actions.appendChild(clearBtn);
+        body.appendChild(actions);
 
-    els.body.appendChild(list);
+        list.className = 'modal-list';
+        if(!options.files || !options.files.length){
+          appendEmptyState(list, '추가된 로그 파일이 없습니다.');
+          body.appendChild(list);
+          return;
+        }
+
+        options.files.forEach(function(file, index){
+          var item = document.createElement('div');
+          var main = document.createElement('div');
+          var fileName = document.createElement('div');
+          var meta = document.createElement('div');
+          var removeBtn = document.createElement('button');
+
+          item.className = 'file-item';
+          main.className = 'file-item-main';
+          fileName.className = 'file-name';
+          meta.className = 'file-meta';
+          fileName.textContent = file.name;
+          meta.textContent = formatBytes(file.size) + ' · ' + new Date(file.lastModified || Date.now()).toLocaleString();
+
+          removeBtn.type = 'button';
+          removeBtn.className = 'btn btn-danger';
+          removeBtn.textContent = '제거';
+          removeBtn.addEventListener('click', function(){
+            options.onRemoveIndex(index);
+            openFileManagerModal(options.getFreshOptions());
+          });
+
+          main.appendChild(fileName);
+          main.appendChild(meta);
+          item.appendChild(main);
+          item.appendChild(removeBtn);
+          list.appendChild(item);
+        });
+
+        body.appendChild(list);
+      }
+    });
   }
 
   function formatBytes(bytes){
-    if(!bytes) return '0 B';
-
     var units = ['B', 'KB', 'MB', 'GB'];
-    var value = bytes;
+    var value = Number(bytes || 0);
     var unitIndex = 0;
 
     while(value >= 1024 && unitIndex < units.length - 1){
@@ -460,18 +504,24 @@
   }
 
   window.KakaoCheckUI = {
+    appendEmptyState: appendEmptyState,
+    buildMetricGrid: buildMetricGrid,
+    buildTableWrap: buildTableWrap,
     closeModal: closeModal,
+    createPanelElement: createPanelElement,
     getModalState: getModalState,
+    openCustomModal: openCustomModal,
+    openFileManagerModal: openFileManagerModal,
+    openSheetPickerModal: openSheetPickerModal,
+    renderFileSummary: renderFileSummary,
+    renderResults: renderResults,
+    renderSelectedSheet: renderSelectedSheet,
+    setAppNotice: setAppNotice,
+    setAuthError: setAuthError,
     setAuthState: setAuthState,
     setLoginReady: setLoginReady,
-    setAuthError: setAuthError,
-    createPanelElement: createPanelElement,
-    renderSelectedSheet: renderSelectedSheet,
-    renderFileSummary: renderFileSummary,
-    setPanelStatus: setPanelStatus,
+    setPanelActionState: setPanelActionState,
     setPanelError: setPanelError,
-    renderResults: renderResults,
-    openSheetPickerModal: openSheetPickerModal,
-    openFileManagerModal: openFileManagerModal
+    setPanelStatus: setPanelStatus
   };
 })();

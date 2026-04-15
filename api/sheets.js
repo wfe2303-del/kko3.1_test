@@ -5,6 +5,8 @@ module.exports = async function handler(req, res) {
   setJsonHeaders(res);
 
   var session = auth.getSession(req);
+  var spreadsheetId = appsScript.getAttendanceSpreadsheetId();
+
   if(!session.configured){
     res.statusCode = 503;
     res.end(JSON.stringify({ error: 'Login is not configured. Set KAKAO_CHECK_SESSION_SECRET and KAKAO_CHECK_USERS_JSON.' }));
@@ -23,7 +25,6 @@ module.exports = async function handler(req, res) {
     return;
   }
 
-  var spreadsheetId = appsScript.getAttendanceSpreadsheetId();
   if(!spreadsheetId){
     res.statusCode = 503;
     res.end(JSON.stringify({ error: 'KAKAO_CHECK_SPREADSHEET_ID is missing.' }));
@@ -32,15 +33,17 @@ module.exports = async function handler(req, res) {
 
   try {
     if(req.method === 'GET'){
-      return handleGet(req, res, session.user, spreadsheetId);
+      await handleGet(req, res, session.user, spreadsheetId);
+      return;
     }
 
     if(req.method === 'POST'){
-      return handlePost(req, res, session.user, spreadsheetId);
+      await handlePost(req, res, session.user, spreadsheetId);
+      return;
     }
 
     res.statusCode = 405;
-    res.end(JSON.stringify({ error: 'Method not allowed' }));
+    res.end(JSON.stringify({ error: 'Method not allowed.' }));
   } catch (error) {
     res.statusCode = Number(error && error.statusCode) || 500;
     res.end(JSON.stringify({ error: error && error.message ? error.message : 'Sheet request failed.' }));
@@ -55,7 +58,6 @@ async function handleGet(req, res, user, spreadsheetId){
       spreadsheetId: spreadsheetId
     });
     var titles = auth.filterAllowedSheets(user, payload.titles || []);
-
     res.statusCode = 200;
     res.end(JSON.stringify({ titles: titles }));
     return;
@@ -72,6 +74,7 @@ async function handleGet(req, res, user, spreadsheetId){
       sheetTitle: sheetTitle,
       startRow: 2,
       targetRoleText: '수강생',
+      allowRoleFallback: true,
       columns: {
         name: 'C',
         phone: 'D',
@@ -81,7 +84,15 @@ async function handleGet(req, res, user, spreadsheetId){
     });
 
     res.statusCode = 200;
-    res.end(JSON.stringify({ rows: roster.rows || [] }));
+    res.end(JSON.stringify({
+      rows: roster.rows || [],
+      meta: {
+        fallbackUsed: !!roster.fallbackUsed,
+        roleFilterApplied: !!roster.roleFilterApplied,
+        matchedRoleCount: Number(roster.matchedRoleCount || 0),
+        availableRoles: Array.isArray(roster.availableRoles) ? roster.availableRoles : []
+      }
+    }));
     return;
   }
 
@@ -91,6 +102,8 @@ async function handleGet(req, res, user, spreadsheetId){
 async function handlePost(req, res, user, spreadsheetId){
   var body = readBody(req);
   var action = String(body.action || '').trim();
+  var payload;
+  var updates;
 
   if(action !== 'writeUpdates'){
     throw createError(400, 'Unsupported action.');
@@ -100,7 +113,7 @@ async function handlePost(req, res, user, spreadsheetId){
     throw createError(403, 'This account cannot write attendance updates.');
   }
 
-  var updates = Array.isArray(body.updates) ? body.updates : [];
+  updates = Array.isArray(body.updates) ? body.updates : [];
   updates.forEach(function(item){
     var sheetTitle = extractSheetTitle(item && item.range);
     if(!auth.canAccessSheet(user, sheetTitle)){
@@ -108,7 +121,7 @@ async function handlePost(req, res, user, spreadsheetId){
     }
   });
 
-  var payload = await appsScript.callAppsScript('writeUpdates', {
+  payload = await appsScript.callAppsScript('writeUpdates', {
     spreadsheetId: spreadsheetId,
     updates: updates
   });
@@ -120,18 +133,14 @@ async function handlePost(req, res, user, spreadsheetId){
 function extractSheetTitle(range){
   var value = String(range || '').trim();
   var bangIndex = value.lastIndexOf('!');
+  var sheetTitle;
+
   if(bangIndex < 0) return '';
-  var sheetTitle = value.slice(0, bangIndex);
+  sheetTitle = value.slice(0, bangIndex);
   if(sheetTitle[0] === '\'' && sheetTitle[sheetTitle.length - 1] === '\''){
     sheetTitle = sheetTitle.slice(1, -1).replace(/''/g, '\'');
   }
   return sheetTitle;
-}
-
-function createError(statusCode, message){
-  var error = new Error(message);
-  error.statusCode = statusCode;
-  return error;
 }
 
 function readBody(req){
@@ -144,6 +153,12 @@ function readBody(req){
   } catch (error) {
     return {};
   }
+}
+
+function createError(statusCode, message){
+  var error = new Error(message);
+  error.statusCode = statusCode;
+  return error;
 }
 
 function setJsonHeaders(res){

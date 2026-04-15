@@ -2,22 +2,25 @@
   var auth = window.KakaoCheckAuth;
 
   async function apiFetch(url, init){
-    auth.requireToken();
-
     var options = init || {};
     var headers = Object.assign({
       'Accept': 'application/json'
     }, options.headers || {});
+    var response;
+    var text;
+    var data;
 
-    var response = await fetch(url, Object.assign({}, options, {
+    auth.requireToken();
+
+    response = await fetch(url, Object.assign({}, options, {
       headers: headers,
       cache: 'no-store',
       credentials: 'same-origin',
       referrerPolicy: 'no-referrer'
     }));
 
-    var text = await response.text();
-    var data = safeParseJson(text);
+    text = await response.text();
+    data = safeParseJson(text);
 
     if(!response.ok){
       throw new Error(data && data.error ? data.error : (text || '시트 요청에 실패했습니다.'));
@@ -35,7 +38,10 @@
   function loadRosterRows(sheetTitle){
     var url = '/api/sheets?action=loadRosterRows&sheetTitle=' + encodeURIComponent(sheetTitle || '');
     return apiFetch(url).then(function(data){
-      return Array.isArray(data.rows) ? data.rows : [];
+      return {
+        rows: Array.isArray(data.rows) ? data.rows : [],
+        meta: data.meta || {}
+      };
     });
   }
 
