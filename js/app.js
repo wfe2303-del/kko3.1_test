@@ -173,7 +173,7 @@
       openManualReview(panelState.id);
     });
     storageBtn.addEventListener('click', function(){
-      openStoredSheetData(panelState.selectedSheet);
+      openStoredSheetData(panelState.selectedSheet, panelState.id);
     });
     fileInput.addEventListener('change', function(event){
       var incoming = Array.from(event.target.files || []);
@@ -308,6 +308,7 @@
     var rosterResponse;
     var pendingResponse;
     var historyState = createHistoryState();
+    var execution;
     var result;
     var statusMessage;
 
@@ -361,13 +362,7 @@
         await sheets.writeUpdates(result.updates);
       }
 
-      try {
-        await syncHistoryRun(panelState, result, previewOnly, historyState);
-      } catch (error) {
-        historyState.syncError = toUserMessage(error);
-      }
-
-      panelState.lastExecution = {
+      execution = createExecutionRecord({
         parsed: parsed,
         previewOnly: previewOnly,
         rosterRows: rosterResponse.rows || [],
@@ -376,7 +371,15 @@
         manualRules: Array.isArray(pendingResponse.manualRules) ? pendingResponse.manualRules.slice() : [],
         result: result,
         historyState: historyState
-      };
+      });
+
+      try {
+        await syncHistoryRun(panelState, execution);
+      } catch (error) {
+        historyState.syncError = toUserMessage(error);
+      }
+
+      panelState.lastExecution = execution;
 
       renderRunResult(panelState);
 
@@ -430,7 +433,7 @@
       '박시온님이 나갔습니다.'
     ].join('\n'));
 
-    panelState.lastExecution = {
+    panelState.lastExecution = createExecutionRecord({
       parsed: parsed,
       previewOnly: true,
       rosterRows: roster,
@@ -445,51 +448,60 @@
         sheetTitle: '데모'
       }),
       historyState: createHistoryState()
-    };
+    });
 
     ui.setPanelError(panelState.el, '');
     renderRunResult(panelState);
     ui.setPanelStatus(panelState.el, '데모 완료', 'ok');
   }
 
-  async function syncHistoryRun(panelState, result, previewOnly, historyState){
+  async function syncHistoryRun(panelState, execution){
     var response;
-    if(previewOnly){
+    var historyState = execution.historyState || createHistoryState();
+
+    if(execution.previewOnly){
       historyState.syncSkipped = true;
       return;
     }
 
-    response = await history.syncRun(buildHistoryPayload(panelState, result, previewOnly));
+    response = await history.syncRun(buildStoragePayload(panelState, execution));
     if(response && response.enabled === false){
       historyState.enabled = false;
-      historyState.message = response.message || '매칭 기록 백엔드가 비활성화되어 있습니다.';
+      historyState.message = response.message || '저장 실행 백엔드가 비활성화되어 있습니다.';
       historyState.syncSkipped = true;
       return;
     }
 
     historyState.enabled = true;
     historyState.synced = !!response.synced;
-    historyState.runId = String(response.runId || '').trim();
     historyState.openCount = Number(response.openCount || 0);
     historyState.openedCount = Number(response.openedCount || 0);
     historyState.resolvedCount = Number(response.resolvedCount || 0);
+    historyState.manualRuleCount = Number(response.manualRuleCount || historyState.manualRuleCount || 0);
   }
 
-  function buildHistoryPayload(panelState, result, previewOnly){
+  function createExecutionRecord(payload){
+    return {
+      parsed: payload.parsed,
+      previewOnly: !!payload.previewOnly,
+      rosterRows: Array.isArray(payload.rosterRows) ? payload.rosterRows : [],
+      sheetMeta: payload.sheetMeta || {},
+      pendingItems: Array.isArray(payload.pendingItems) ? payload.pendingItems : [],
+      manualRules: Array.isArray(payload.manualRules) ? payload.manualRules : [],
+      result: payload.result || matcher.buildResult([], { events: [] }, {}),
+      historyState: payload.historyState || createHistoryState()
+    };
+  }
+
+  function buildStoragePayload(panelState, execution){
     var user = auth.getCurrentUser() || {};
+    var result = execution.result || {};
     return {
       sheetTitle: panelState.selectedSheet,
-      previewOnly: !!previewOnly,
+      previewOnly: !!execution.previewOnly,
       actorEmail: String(user.email || '').trim(),
       actorName: String(user.name || '').trim(),
       executedAt: new Date().toISOString(),
-      files: panelState.files.map(function(file){
-        return {
-          name: file.name,
-          size: file.size,
-          lastModified: file.lastModified || null
-        };
-      }),
       summary: {
         joinedCount: result.joinedCount,
         leftCount: result.leftCount,
@@ -502,25 +514,76 @@
         excludedByRuleCount: result.excludedByRuleItems.length
       },
       currentUnmatchedItems: result.currentUnmatchedItems,
-      resolvedPendingItems: result.pendingResolvedItems.concat(result.manualResolvedItems)
+      resolvedPendingItems: result.pendingResolvedItems.concat(result.manualResolvedItems),
+      snapshot: buildSnapshotPayload(panelState, execution)
     };
   }
 
-  function renderRunResult(panelState){
-    var execution = panelState.lastExecution;
-    var result;
-    var historyState;
-    var sections;
+  function buildSnapshotPayload(panelState, execution){
+    var historyState = Object.assign(createHistoryState(), clonePlain(execution.historyState || {}));
+    historyState.pendingCount = Array.isArray(execution.pendingItems) ? execution.pendingItems.length : 0;
+    historyState.manualRuleCount = Array.isArray(execution.manualRules) ? execution.manualRules.length : 0;
+    historyState.openCount = Math.max(
+      Number(historyState.openCount || 0),
+      historyState.pendingCount
+    );
 
-    if(!execution){
-      ui.renderResults(panelState.el, []);
-      syncPanelButtons(panelState);
-      return;
-    }
+    return {
+      version: 1,
+      sheetTitle: panelState.selectedSheet,
+      savedAt: new Date().toISOString(),
+      execution: {
+        previewOnly: !!execution.previewOnly,
+        parsed: clonePlain(execution.parsed || { events: [], joinedCount: 0, leftCount: 0 }),
+        rosterRows: clonePlain(execution.rosterRows || []),
+        sheetMeta: clonePlain(execution.sheetMeta || {}),
+        pendingItems: clonePlain(execution.pendingItems || []),
+        manualRules: clonePlain(execution.manualRules || []),
+        historyState: historyState
+      }
+    };
+  }
 
-    result = execution.result;
-    historyState = execution.historyState || createHistoryState();
-    sections = [
+  function clonePlain(value){
+    return JSON.parse(JSON.stringify(value == null ? null : value));
+  }
+
+  function restoreExecutionFromSnapshot(snapshot, fallbackSheetTitle){
+    var container = snapshot && snapshot.execution ? snapshot.execution : snapshot;
+    var parsed = clonePlain(container && container.parsed ? container.parsed : { events: [], joinedCount: 0, leftCount: 0 });
+    var rosterRows = Array.isArray(container && container.rosterRows) ? clonePlain(container.rosterRows) : [];
+    var pendingItems = Array.isArray(container && container.pendingItems) ? clonePlain(container.pendingItems) : [];
+    var manualRules = Array.isArray(container && container.manualRules) ? clonePlain(container.manualRules) : [];
+    var historyState = Object.assign(createHistoryState(), clonePlain(container && container.historyState ? container.historyState : {}));
+    var sheetTitle = String((snapshot && snapshot.sheetTitle) || fallbackSheetTitle || '').trim();
+
+    historyState.enabled = true;
+    historyState.synced = true;
+    historyState.pendingCount = pendingItems.length;
+    historyState.manualRuleCount = manualRules.length;
+    historyState.openCount = Math.max(Number(historyState.openCount || 0), pendingItems.length);
+
+    return createExecutionRecord({
+      parsed: parsed,
+      previewOnly: !!(container && container.previewOnly),
+      rosterRows: rosterRows,
+      sheetMeta: container && container.sheetMeta ? container.sheetMeta : {},
+      pendingItems: pendingItems,
+      manualRules: manualRules,
+      result: matcher.buildResult(rosterRows, parsed, {
+        pendingItems: pendingItems,
+        manualRules: manualRules,
+        sheetTitle: sheetTitle
+      }),
+      historyState: historyState
+    });
+  }
+
+  function buildResultSections(execution){
+    var result = execution.result;
+    var historyState = execution.historyState || createHistoryState();
+
+    return [
       {
         title: '명단 기준 상태',
         headers: ['row', 'name', 'phone', 'status', 'matched', 'notes'],
@@ -582,15 +645,25 @@
         ]
       }
     ];
+  }
 
-    ui.renderResults(panelState.el, sections);
+  function renderRunResult(panelState){
+    var execution = panelState.lastExecution;
+
+    if(!execution){
+      ui.renderResults(panelState.el, []);
+      syncPanelButtons(panelState);
+      return;
+    }
+
+    ui.renderResults(panelState.el, buildResultSections(execution));
     syncPanelButtons(panelState);
   }
 
   function buildSyncLabel(historyState, previewOnly){
     if(previewOnly) return '미리보기';
     if(historyState.syncError) return '저장 경고';
-    if(historyState.synced) return '동기화 완료';
+    if(historyState.synced) return '저장 완료';
     if(historyState.syncSkipped) return '저장 안 함';
     return historyState.enabled ? '대기 중' : (historyState.message || '백엔드 미설정');
   }
@@ -737,6 +810,7 @@
     var panelState = state.panels.get(panelId);
     var execution;
     var response;
+    var snapshotError = '';
 
     if(!panelState || !panelState.lastExecution) return;
     execution = panelState.lastExecution;
@@ -778,10 +852,26 @@
         execution.historyState.pendingCount = Math.max(0, Number(execution.historyState.pendingCount || 0) - 1);
         execution.historyState.openCount = Math.max(0, Number(execution.historyState.openCount || 0) - 1);
         execution.historyState.manualRuleCount = execution.manualRules.length;
+        execution.historyState.synced = true;
+      }
+
+      try {
+        await history.saveSnapshot({
+          sheetTitle: panelState.selectedSheet,
+          previewOnly: execution.previewOnly,
+          snapshot: buildSnapshotPayload(panelState, execution)
+        });
+      } catch (error) {
+        snapshotError = toUserMessage(error);
       }
 
       renderRunResult(panelState);
-      ui.setPanelStatus(panelState.el, actionType === 'match-student' ? '수동 매칭 저장 완료' : '코칭스태프 제외 저장 완료', 'ok');
+      if(snapshotError){
+        ui.setPanelStatus(panelState.el, actionType === 'match-student' ? '수동 매칭 저장 완료 / 저장 경고' : '코칭스태프 제외 저장 완료 / 저장 경고', 'warn');
+        ui.setPanelError(panelState.el, snapshotError);
+      } else {
+        ui.setPanelStatus(panelState.el, actionType === 'match-student' ? '수동 매칭 저장 완료' : '코칭스태프 제외 저장 완료', 'ok');
+      }
       openManualReview(panelId);
     } catch (error) {
       ui.setPanelStatus(panelState.el, '수동 처리 실패', 'bad');
@@ -841,7 +931,7 @@
             button.className = 'modal-list-btn';
             button.textContent = item.sheetTitle;
             meta.className = 'list-item-subtext';
-            meta.textContent = '열린 미매칭 ' + item.openCount + '건 · 수동 규칙 ' + item.manualRuleCount + '건 · 실행 기록 ' + item.runCount + '건';
+            meta.textContent = '열린 미매칭 ' + item.openCount + '건 · 수동 규칙 ' + item.manualRuleCount + '건 · 최신 저장 ' + (item.lastSavedAt || '-');
             button.appendChild(meta);
             button.addEventListener('click', function(){
               openStoredSheetData(item.sheetTitle);
@@ -859,16 +949,24 @@
     }
   }
 
-  async function openStoredSheetData(sheetTitle){
+  async function openStoredSheetData(sheetTitle, panelId){
     var data;
+    var panelState;
     if(!sheetTitle){
       ui.setAppNotice('저장 데이터를 볼 시트를 먼저 선택해 주세요.', 'warn');
       return;
     }
 
     try {
-      ui.showLoading('저장 데이터 상세 불러오는 중', '선택한 시트의 저장 이력을 읽고 있습니다.');
+      ui.showLoading(panelId ? '저장 데이터 불러오는 중' : '저장 데이터 상세 불러오는 중', panelId ? '저장된 최신 실행 상태를 패널에 복원하고 있습니다.' : '선택한 시트의 저장 상태를 읽고 있습니다.');
       data = await history.getStoredSheetData(sheetTitle);
+      if(panelId){
+        panelState = state.panels.get(panelId);
+        if(!panelState) return;
+        loadStoredSheetIntoPanel(panelState, sheetTitle, data);
+        return;
+      }
+
       ui.openCustomModal({
         type: 'stored-sheet-data',
         title: '서버 저장 데이터',
@@ -877,33 +975,11 @@
           body.appendChild(ui.buildMetricGrid([
             { label: '열린 미매칭', value: data.summary ? data.summary.openCount : 0 },
             { label: '수동 규칙', value: data.summary ? data.summary.manualRuleCount : 0 },
-            { label: '실행 기록', value: data.summary ? data.summary.runCount : 0 },
+            { label: '저장 상태', value: data.summary && data.summary.snapshotReady ? '저장됨' : '없음' },
             { label: '최근 저장', value: data.summary ? (data.summary.lastSavedAt || '-') : '-' }
           ]));
 
-          appendStorageSection(body, '최근 실행 기록', ['savedAt', 'previewOnly', 'actor', 'joined', 'left', 'attending', 'missing', 'currentUnmatched'], (data.runs || []).map(function(item){
-            return [
-              item.savedAt,
-              item.previewOnly ? '미리보기' : '실행',
-              item.actorName || item.actorEmail || '',
-              item.joinedCount,
-              item.leftCount,
-              item.attendingCount,
-              item.missingCount,
-              item.currentUnmatchedCount
-            ];
-          }));
-
-          appendStorageSection(body, '미매칭 / 수동 처리 큐', ['status', 'label', 'reason', 'attempts', 'lastSeenAt', 'resolution'], (data.queueItems || []).map(function(item){
-            return [
-              item.status,
-              item.label,
-              item.reason,
-              item.attemptCount,
-              item.lastSeenAt,
-              item.resolutionLabel || ''
-            ];
-          }));
+          appendStoredExecutionSections(body, sheetTitle, data);
         }
       });
     } catch (error) {
@@ -911,6 +987,42 @@
     } finally {
       ui.hideLoading();
     }
+  }
+
+  function loadStoredSheetIntoPanel(panelState, sheetTitle, data){
+    if(!data || !data.snapshot){
+      throw new Error('이 시트에는 저장된 최신 실행 상태가 없습니다.');
+    }
+
+    panelState.selectedSheet = sheetTitle;
+    panelState.files = [];
+    panelState.lastExecution = restoreExecutionFromSnapshot(data.snapshot, sheetTitle);
+
+    ui.renderSelectedSheet(panelState.el, sheetTitle);
+    ui.renderFileSummary(panelState.el, []);
+    ui.setPanelError(panelState.el, '');
+    renderRunResult(panelState);
+    ui.setPanelStatus(panelState.el, '저장 데이터 불러옴', 'ok');
+    ui.closeModal();
+  }
+
+  function appendStoredExecutionSections(root, sheetTitle, data){
+    var execution;
+
+    if(!data || !data.snapshot){
+      ui.appendEmptyState(root, '저장된 최신 실행 상태가 없습니다.');
+      return;
+    }
+
+    execution = restoreExecutionFromSnapshot(data.snapshot, sheetTitle);
+    buildResultSections(execution).forEach(function(section){
+      if(section.summary){
+        root.appendChild(ui.buildMetricGrid(section.summary));
+        return;
+      }
+
+      appendStorageSection(root, section.title, section.headers || [], section.rows || []);
+    });
   }
 
   function appendStorageSection(root, titleText, headers, rows){

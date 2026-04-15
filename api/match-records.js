@@ -42,6 +42,11 @@ module.exports = async function handler(req, res) {
       return;
     }
 
+    if(action === 'saveSnapshot'){
+      await handleSaveSnapshot(req, res, session.user);
+      return;
+    }
+
     if(action === 'applyManualAction'){
       await handleApplyManualAction(req, res, session.user);
       return;
@@ -142,6 +147,31 @@ async function handleApplyManualAction(req, res, user){
   res.end(JSON.stringify(response || { enabled: true }));
 }
 
+async function handleSaveSnapshot(req, res, user){
+  var body = readBody(req);
+  var payload = body.payload || {};
+  var sheetTitle = String(payload.sheetTitle || '').trim();
+  var response;
+
+  if(!user.canWrite){
+    res.statusCode = 403;
+    res.end(JSON.stringify({ error: 'This account cannot save attendance records.' }));
+    return;
+  }
+
+  if(sheetTitle && !auth.canAccessSheet(user, sheetTitle)){
+    res.statusCode = 403;
+    res.end(JSON.stringify({ error: 'You do not have access to this sheet.' }));
+    return;
+  }
+
+  payload.actorEmail = user.username;
+  payload.actorName = user.displayName;
+  response = await appsScript.callAppsScript('saveSnapshot', payload);
+  res.statusCode = 200;
+  res.end(JSON.stringify(response || { enabled: true, saved: true }));
+}
+
 async function handleStorageOverview(res, user){
   var response = await appsScript.callAppsScript('getStorageOverview', {});
   var sheets = Array.isArray(response.sheets) ? response.sheets.filter(function(item){
@@ -170,7 +200,7 @@ async function handleStoredSheetData(req, res, user){
 
   response = await appsScript.callAppsScript('getStoredSheetData', { sheetTitle: sheetTitle });
   res.statusCode = 200;
-  res.end(JSON.stringify(response || { enabled: true, summary: {}, runs: [], queueItems: [] }));
+  res.end(JSON.stringify(response || { enabled: true, summary: {}, snapshot: null }));
 }
 
 function filterSheetEntries(items, user){
@@ -216,7 +246,7 @@ function buildDisabledResponse(action){
   if(action === 'listPending'){
     return {
       enabled: false,
-      message: 'Match history backend is not configured.',
+      message: 'Stored execution backend is not configured.',
       items: [],
       manualRules: []
     };
@@ -225,7 +255,7 @@ function buildDisabledResponse(action){
   if(action === 'syncRun'){
     return {
       enabled: false,
-      message: 'Match history backend is not configured.',
+      message: 'Stored execution backend is not configured.',
       synced: false,
       openCount: 0,
       openedCount: 0,
@@ -233,20 +263,27 @@ function buildDisabledResponse(action){
     };
   }
 
+  if(action === 'saveSnapshot'){
+    return {
+      enabled: false,
+      message: 'Stored execution backend is not configured.',
+      saved: false
+    };
+  }
+
   if(action === 'getStorageOverview' || action === 'getStoredSheetData'){
     return {
       enabled: false,
-      message: 'Match history backend is not configured.',
+      message: 'Stored execution backend is not configured.',
       sheets: [],
       summary: {},
-      runs: [],
-      queueItems: []
+      snapshot: null
     };
   }
 
   return {
     enabled: false,
-    message: 'Match history backend is not configured.'
+    message: 'Stored execution backend is not configured.'
   };
 }
 

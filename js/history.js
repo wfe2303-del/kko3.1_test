@@ -4,7 +4,7 @@
   function buildDisabledResponse(message, extra){
     return Object.assign({
       enabled: false,
-      message: String(message || '매칭 기록 백엔드가 설정되지 않았습니다.')
+      message: String(message || '저장 실행 백엔드가 설정되지 않았습니다.')
     }, extra || {});
   }
 
@@ -21,7 +21,7 @@
     var payload = text ? safeParseJson(text) : null;
 
     if(!response.ok){
-      throw new Error(payload && payload.error ? payload.error : (text || '매칭 기록 API 호출에 실패했습니다.'));
+      throw new Error(payload && payload.error ? payload.error : (text || '저장 실행 API 호출에 실패했습니다.'));
     }
 
     return payload || {};
@@ -100,6 +100,20 @@
     });
   }
 
+  function saveSnapshot(payload){
+    return apiFetch('/api/match-records', {
+      method: 'POST',
+      headers: {
+        'Accept': 'application/json',
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({
+        action: 'saveSnapshot',
+        payload: payload || {}
+      })
+    });
+  }
+
   function getStorageOverview(){
     return apiFetch('/api/match-records?action=getStorageOverview');
   }
@@ -126,6 +140,7 @@
     getStoredSheetData: getStoredSheetData,
     health: health,
     listPending: listPending,
+    saveSnapshot: saveSnapshot,
     syncRun: syncRun
   };
 })();
