@@ -881,9 +881,10 @@ function rebuildSummarySheet_() {
 }
 
 function summaryRowToOverview_(row) {
+  var snapshotReady = row && (row.snapshotReady === true || String(row.snapshotReady || '').trim().toUpperCase() === 'TRUE');
   return {
     sheetTitle: normalizeText_(row.sheetTitle),
-    snapshotReady: String(row.snapshotReady || '').trim() === 'TRUE',
+    snapshotReady: !!snapshotReady,
     openCount: Number(row.openCount || 0),
     manualRuleCount: Number(row.manualRuleCount || 0),
     lastSavedAt: normalizeText_(row.lastSavedAt),
@@ -923,6 +924,9 @@ function saveLatestSnapshot_(sheetTitle, snapshot, options) {
     return [
       normalizedSheetTitle,
       savedAt,
+      options && options.previewOnly ? 'TRUE' : 'FALSE',
+      normalizeText_(options && options.actorEmail),
+      normalizeText_(options && options.actorName),
       index + 1,
       chunks.length,
       chunk

@@ -389,7 +389,7 @@
       }
 
       if(historyState.syncError){
-        ui.setPanelStatus(panelState.el, statusMessage + ' / 기록 저장 경고', 'warn');
+        ui.setPanelStatus(panelState.el, statusMessage + ' / 저장 경고', 'warn');
         ui.setPanelError(panelState.el, historyState.syncError);
       } else {
         ui.setPanelStatus(panelState.el, statusMessage, previewOnly || (rosterResponse.meta && rosterResponse.meta.fallbackUsed) ? 'warn' : 'ok');
@@ -474,6 +474,7 @@
 
     historyState.enabled = true;
     historyState.synced = !!response.synced;
+    historyState.syncError = '';
     historyState.openCount = Number(response.openCount || 0);
     historyState.openedCount = Number(response.openedCount || 0);
     historyState.resolvedCount = Number(response.resolvedCount || 0);
@@ -853,6 +854,7 @@
         execution.historyState.openCount = Math.max(0, Number(execution.historyState.openCount || 0) - 1);
         execution.historyState.manualRuleCount = execution.manualRules.length;
         execution.historyState.synced = true;
+        execution.historyState.syncError = '';
       }
 
       try {
@@ -863,6 +865,10 @@
         });
       } catch (error) {
         snapshotError = toUserMessage(error);
+      }
+
+      if(execution.historyState){
+        execution.historyState.syncError = snapshotError;
       }
 
       renderRunResult(panelState);
@@ -1052,7 +1058,29 @@
   }
 
   function toUserMessage(error){
-    var message = error && error.message ? error.message : String(error || '');
+    var message = '';
+
+    if(typeof error === 'string'){
+      message = error;
+    } else if(error && typeof error.message === 'string' && error.message.trim()){
+      message = error.message;
+    } else if(error && typeof error.error === 'string' && error.error.trim()){
+      message = error.error;
+    } else if(error && error.cause && typeof error.cause.message === 'string' && error.cause.message.trim()){
+      message = error.cause.message;
+    } else if(error && typeof error === 'object'){
+      try {
+        message = JSON.stringify(error);
+      } catch (jsonError) {
+        message = String(error || '');
+      }
+    } else {
+      message = String(error || '');
+    }
+
+    if(!message || message === '{}' || message === '[object Object]'){
+      message = '알 수 없는 오류가 발생했습니다.';
+    }
 
     if(message.indexOf('Unsupported action:') === 0){
       return '현재 연결된 Apps Script 웹앱이 구버전입니다. 최신 apps-script/Code.gs를 붙여넣고 새 버전으로 다시 배포해 주세요. (' + message + ')';
