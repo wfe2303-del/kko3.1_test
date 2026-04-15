@@ -77,27 +77,15 @@
   }
 
   async function handleAuthenticatedState(){
-    await loadBackendHealth();
     await loadSheetTitles();
   }
 
-  async function loadBackendHealth(){
-    try {
-      await history.health();
-      state.backendHealthy = true;
-      if(!state.lastSheetLoadError){
-        ui.setAppNotice('', '');
-      }
-    } catch (error) {
-      state.backendHealthy = false;
-      ui.setAppNotice('백엔드 연결 확인이 필요합니다. ' + toUserMessage(error), 'bad');
-    }
-  }
-
   async function loadSheetTitles(){
+    ui.showLoading('시트 목록 불러오는 중', '접근 가능한 시트 탭을 확인하고 있습니다.');
     try {
       state.sheetTitles = await sheets.listSheetTitles();
       state.lastSheetLoadError = '';
+      state.backendHealthy = true;
 
       if(!state.sheetTitles.length){
         ui.setAppNotice('불러올 수 있는 시트가 없습니다. 계정 권한 또는 Apps Script의 대상 스프레드시트 접근 권한을 확인해 주세요.', 'warn');
@@ -107,7 +95,10 @@
     } catch (error) {
       state.sheetTitles = [];
       state.lastSheetLoadError = toUserMessage(error);
+      state.backendHealthy = false;
       ui.setAppNotice('시트 목록을 불러오지 못했습니다. ' + state.lastSheetLoadError, 'bad');
+    } finally {
+      ui.hideLoading();
     }
   }
 
@@ -324,6 +315,7 @@
     previewOnly = utils.qs('.js-preview-only', panelState.el).checked;
 
     try {
+      ui.showLoading('입장 체크 처리 중', '수강생 명단과 미매칭 데이터를 불러오고 있습니다.');
       ui.setPanelError(panelState.el, '');
       ui.setPanelStatus(panelState.el, '실행 중...', 'warn');
 
@@ -333,21 +325,30 @@
 
       chatText = await parser.combineFiles(panelState.files);
       parsed = parser.parseChatText(chatText);
-      rosterResponse = await sheets.loadRosterRows(panelState.selectedSheet);
+      var settled = await Promise.allSettled([
+        sheets.loadRosterRows(panelState.selectedSheet),
+        history.listPending(panelState.selectedSheet)
+      ]);
 
-      if(!rosterResponse.rows.length){
-        throw new Error('선택한 시트에서 불러온 수강생 명단이 없습니다. Apps Script 접근 권한과 역할 열(N열) 값을 확인해 주세요.');
+      if(settled[0].status !== 'fulfilled'){
+        throw settled[0].reason;
       }
 
-      try {
-        pendingResponse = await history.listPending(panelState.selectedSheet);
+      rosterResponse = settled[0].value;
+
+      if(settled[1].status === 'fulfilled'){
+        pendingResponse = settled[1].value;
         historyState.enabled = !!pendingResponse.enabled;
         historyState.pendingCount = Array.isArray(pendingResponse.items) ? pendingResponse.items.length : 0;
         historyState.manualRuleCount = Array.isArray(pendingResponse.manualRules) ? pendingResponse.manualRules.length : 0;
-      } catch (error) {
+      } else {
         pendingResponse = { enabled: false, items: [], manualRules: [] };
         historyState.enabled = false;
-        historyState.message = toUserMessage(error);
+        historyState.message = toUserMessage(settled[1].reason);
+      }
+
+      if(!rosterResponse.rows.length){
+        throw new Error('선택한 시트에서 불러온 수강생 명단이 없습니다. Apps Script 접근 권한과 역할 열(N열) 값을 확인해 주세요.');
       }
 
       result = matcher.buildResult(rosterResponse.rows, parsed, {
@@ -397,6 +398,8 @@
       ui.setPanelError(panelState.el, toUserMessage(error));
       syncPanelButtons(panelState);
       console.error(error);
+    } finally {
+      ui.hideLoading();
     }
   }
 
@@ -739,6 +742,7 @@
     execution = panelState.lastExecution;
 
     try {
+      ui.showLoading('수동 처리 저장 중', '미매칭 처리 결과를 저장하고 있습니다.');
       ui.setPanelError(panelState.el, '');
       ui.setPanelStatus(panelState.el, '수동 처리 저장 중...', 'warn');
 
@@ -782,6 +786,8 @@
     } catch (error) {
       ui.setPanelStatus(panelState.el, '수동 처리 실패', 'bad');
       ui.setPanelError(panelState.el, toUserMessage(error));
+    } finally {
+      ui.hideLoading();
     }
   }
 
@@ -805,6 +811,7 @@
     var response;
 
     try {
+      ui.showLoading('서버 저장 데이터 불러오는 중', '시트별 저장 현황을 가져오고 있습니다.');
       response = await history.getStorageOverview();
       ui.openCustomModal({
         type: 'storage-overview',
@@ -847,6 +854,8 @@
       });
     } catch (error) {
       ui.setAppNotice('서버 저장 데이터를 불러오지 못했습니다. ' + toUserMessage(error), 'bad');
+    } finally {
+      ui.hideLoading();
     }
   }
 
@@ -858,6 +867,7 @@
     }
 
     try {
+      ui.showLoading('저장 데이터 상세 불러오는 중', '선택한 시트의 저장 이력을 읽고 있습니다.');
       data = await history.getStoredSheetData(sheetTitle);
       ui.openCustomModal({
         type: 'stored-sheet-data',
@@ -898,6 +908,8 @@
       });
     } catch (error) {
       ui.setAppNotice('저장된 시트 데이터를 불러오지 못했습니다. ' + toUserMessage(error), 'bad');
+    } finally {
+      ui.hideLoading();
     }
   }
 
@@ -930,6 +942,9 @@
   function toUserMessage(error){
     var message = error && error.message ? error.message : String(error || '');
 
+    if(message.indexOf('Unsupported action:') === 0){
+      return '현재 연결된 Apps Script 웹앱이 구버전입니다. 최신 apps-script/Code.gs를 붙여넣고 새 버전으로 다시 배포해 주세요. (' + message + ')';
+    }
     if(message.indexOf('MATCH_BACKEND_TOKEN script property is missing.') >= 0){
       return 'Apps Script 프로젝트의 스크립트 속성에 MATCH_BACKEND_TOKEN 값이 없습니다. 현재 Vercel의 KAKAO_CHECK_APPS_SCRIPT_TOKEN 값과 같은 값을 넣고 Apps Script 웹앱을 다시 배포해 주세요.';
     }

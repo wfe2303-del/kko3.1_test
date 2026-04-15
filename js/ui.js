@@ -1,6 +1,7 @@
 (function(){
   var utils = window.KakaoCheckUtils;
   var modalState = null;
+  var loadingDepth = 0;
 
   function modalEls(){
     return {
@@ -64,6 +65,33 @@
 
   function getModalState(){
     return modalState;
+  }
+
+  function showLoading(title, message){
+    var overlay = document.getElementById('loadingOverlay');
+    var titleEl = document.getElementById('loadingTitle');
+    var textEl = document.getElementById('loadingText');
+
+    loadingDepth += 1;
+    if(!overlay) return;
+
+    titleEl.textContent = title || '처리 중입니다';
+    textEl.textContent = message || '잠시만 기다려 주세요.';
+    overlay.classList.remove('hidden');
+    overlay.setAttribute('aria-hidden', 'false');
+  }
+
+  function hideLoading(force){
+    var overlay = document.getElementById('loadingOverlay');
+    if(force){
+      loadingDepth = 0;
+    } else {
+      loadingDepth = Math.max(0, loadingDepth - 1);
+    }
+
+    if(!overlay || loadingDepth > 0) return;
+    overlay.classList.add('hidden');
+    overlay.setAttribute('aria-hidden', 'true');
   }
 
   function setAuthState(state){
@@ -516,6 +544,8 @@
     renderFileSummary: renderFileSummary,
     renderResults: renderResults,
     renderSelectedSheet: renderSelectedSheet,
+    hideLoading: hideLoading,
+    showLoading: showLoading,
     setAppNotice: setAppNotice,
     setAuthError: setAuthError,
     setAuthState: setAuthState,
