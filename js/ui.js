@@ -15,6 +15,7 @@
   function bindModalShell(){
     var els = modalEls();
     if(!els.overlay || els.overlay.dataset.bound === '1') return;
+
     els.overlay.dataset.bound = '1';
     els.closeBtn.addEventListener('click', closeModal);
     els.overlay.addEventListener('click', function(event){
@@ -38,6 +39,7 @@
   function closeModal(){
     var els = modalEls();
     if(!els.overlay) return;
+
     els.overlay.classList.add('hidden');
     els.overlay.setAttribute('aria-hidden', 'true');
     els.body.innerHTML = '';
@@ -53,29 +55,28 @@
     var appShell = document.getElementById('appShell');
     var logoutBtn = document.getElementById('logoutBtn');
     var topbarUser = document.getElementById('topbarUser');
-    var isLoggedIn = !!(state && state.user && state.user.email && state.accessToken);
+    var isLoggedIn = !!(state && state.user && state.accessToken);
 
     if(loginScreen) loginScreen.classList.toggle('hidden', isLoggedIn);
     if(appShell) appShell.classList.toggle('hidden', !isLoggedIn);
     if(logoutBtn) logoutBtn.classList.toggle('hidden', !isLoggedIn);
     if(topbarUser){
-      topbarUser.textContent = isLoggedIn ? state.user.email : '';
+      topbarUser.textContent = isLoggedIn ? formatUserLabel(state.user) : '';
       topbarUser.classList.toggle('hidden', !isLoggedIn);
     }
   }
 
   function setLoginReady(isReady){
     var loginBtn = document.getElementById('loginBtn');
-    if(!loginBtn) return;
-    loginBtn.disabled = !isReady;
-    loginBtn.textContent = isReady ? 'Google 계정으로 로그인' : '로그인 준비 중...';
-  }
+    var usernameInput = document.getElementById('loginUsername');
+    var passwordInput = document.getElementById('loginPassword');
 
-  function setTabState(message, kind){
-    var tabState = document.getElementById('tabState');
-    if(!tabState) return;
-    tabState.className = utils.statusClass(kind || '');
-    tabState.textContent = message || '';
+    if(loginBtn){
+      loginBtn.disabled = !isReady;
+      loginBtn.textContent = isReady ? '로그인' : '로그인 중...';
+    }
+    if(usernameInput) usernameInput.disabled = !isReady;
+    if(passwordInput) passwordInput.disabled = !isReady;
   }
 
   function setAuthError(message){
@@ -87,29 +88,33 @@
     var template = document.getElementById('panelTemplate');
     var node = template.content.firstElementChild.cloneNode(true);
     node.dataset.panelId = String(panelId);
-    utils.qs('.panel-title', node).textContent = '탭 선택 전';
+    utils.qs('.panel-title', node).textContent = '시트를 선택해주세요';
     return node;
   }
 
   function renderSelectedSheet(panelEl, sheetTitle){
     var node = utils.qs('.js-selected-sheet', panelEl);
     var titleNode = utils.qs('.panel-title', panelEl);
-    var label = sheetTitle || '탭 미선택';
+    var label = sheetTitle || '선택되지 않음';
+
     if(node) node.textContent = label;
-    if(titleNode) titleNode.textContent = sheetTitle || '탭 선택 전';
+    if(titleNode) titleNode.textContent = sheetTitle || '시트를 선택해주세요';
   }
 
   function renderFileSummary(panelEl, files){
     var summary = utils.qs('.js-file-summary', panelEl);
     if(!summary) return;
+
     if(!files.length){
       summary.textContent = '파일 없음';
       return;
     }
+
     if(files.length === 1){
       summary.textContent = files[0].name;
       return;
     }
+
     summary.textContent = files.length + '개 파일';
   }
 
@@ -117,12 +122,14 @@
     var status = utils.qs('.js-panel-status', panelEl);
     var meta = utils.qs('.panel-meta', panelEl);
     if(!status || !meta) return;
+
     if(!message){
       meta.classList.add('hidden');
       status.className = 'status-pill js-panel-status';
       status.textContent = '';
       return;
     }
+
     meta.classList.remove('hidden');
     status.className = utils.statusClass(kind || '');
     status.textContent = message;
@@ -136,6 +143,7 @@
   function renderResults(panelEl, sections){
     var root = utils.qs('.js-panel-results', panelEl);
     if(!root) return;
+
     root.innerHTML = '';
     if(!sections.length){
       root.innerHTML = '<div class="empty-state">결과가 없습니다.</div>';
@@ -144,6 +152,7 @@
 
     var summarySection = null;
     var listSections = [];
+
     sections.forEach(function(section){
       if(section.title === '로그 요약') summarySection = section;
       else listSections.push(section);
@@ -152,15 +161,19 @@
     if(listSections.length){
       var buttonGrid = document.createElement('div');
       buttonGrid.className = 'result-button-grid';
+
       listSections.forEach(function(section){
         var button = document.createElement('button');
         button.type = 'button';
         button.className = 'result-open-btn';
+
         var titleWrap = document.createElement('span');
         titleWrap.textContent = section.title;
+
         var badge = document.createElement('span');
         badge.className = 'result-count-badge';
         badge.textContent = String(section.rows ? section.rows.length : 0);
+
         button.appendChild(titleWrap);
         button.appendChild(badge);
         button.addEventListener('click', function(){
@@ -168,39 +181,48 @@
         });
         buttonGrid.appendChild(button);
       });
+
       root.appendChild(buttonGrid);
     }
 
     if(summarySection && summarySection.rows && summarySection.rows[0]){
       var summaryCard = document.createElement('div');
       summaryCard.className = 'result-summary-card';
+
       var title = document.createElement('h3');
       title.className = 'result-summary-title';
       title.textContent = summarySection.title;
       summaryCard.appendChild(title);
+
       var summaryGrid = document.createElement('div');
       summaryGrid.className = 'result-summary-grid';
+
       summarySection.headers.forEach(function(header, index){
         var stat = document.createElement('div');
         stat.className = 'result-stat';
+
         var label = document.createElement('span');
         label.className = 'result-stat-label';
         label.textContent = header;
+
         var value = document.createElement('strong');
         value.className = 'result-stat-value';
         value.textContent = summarySection.rows[0][index] == null ? '' : String(summarySection.rows[0][index]);
+
         stat.appendChild(label);
         stat.appendChild(value);
         summaryGrid.appendChild(stat);
       });
+
       summaryCard.appendChild(summaryGrid);
       root.appendChild(summaryCard);
     }
   }
 
   function openSectionResultModal(section){
-    openModal(section.title, (section.rows && section.rows.length ? section.rows.length + '건' : '데이터 없음'));
+    openModal(section.title, section.rows && section.rows.length ? section.rows.length + '건' : '데이터 없음');
     modalState = { type: 'result-section', title: section.title };
+
     var els = modalEls();
 
     if(section.groups && section.groups.length){
@@ -229,6 +251,7 @@
     function draw(){
       filterRow.innerHTML = '';
       content.innerHTML = '';
+
       groups.forEach(function(group){
         var btn = document.createElement('button');
         btn.type = 'button';
@@ -249,6 +272,7 @@
         content.appendChild(empty);
         return;
       }
+
       content.appendChild(buildTableWrap(section.headers || [], current.rows || []));
     }
 
@@ -260,18 +284,22 @@
   function buildTableWrap(headers, rows){
     var wrap = document.createElement('div');
     wrap.className = 'table-wrap';
+
     var table = document.createElement('table');
     var thead = document.createElement('thead');
     var headerRow = document.createElement('tr');
-    (headers || []).forEach(function(header){
+
+    headers.forEach(function(header){
       var th = document.createElement('th');
       th.textContent = header;
       headerRow.appendChild(th);
     });
+
     thead.appendChild(headerRow);
     table.appendChild(thead);
+
     var tbody = document.createElement('tbody');
-    (rows || []).forEach(function(row){
+    rows.forEach(function(row){
       var tr = document.createElement('tr');
       row.forEach(function(cell){
         var td = document.createElement('td');
@@ -280,29 +308,34 @@
       });
       tbody.appendChild(tr);
     });
+
     table.appendChild(tbody);
     wrap.appendChild(table);
     return wrap;
   }
 
   function openSheetPickerModal(options){
-    openModal(options.title || '탭 선택', options.subtitle || '');
+    openModal(options.title || '시트 선택', options.subtitle || '');
     modalState = { type: 'sheet-picker', panelId: options.panelId };
+
     var els = modalEls();
     var search = document.createElement('input');
     search.className = 'input modal-search';
     search.type = 'text';
-    search.placeholder = '탭 이름 검색';
+    search.placeholder = '시트 이름 검색';
     search.value = options.initialQuery || '';
+
     var list = document.createElement('div');
     list.className = 'modal-list';
 
     function renderList(){
       var query = String(search.value || '').trim().toLowerCase();
       list.innerHTML = '';
+
       var filtered = (options.titles || []).filter(function(title){
         return !query || title.toLowerCase().indexOf(query) >= 0;
       });
+
       if(!filtered.length){
         var empty = document.createElement('div');
         empty.className = 'file-empty';
@@ -310,6 +343,7 @@
         list.appendChild(empty);
         return;
       }
+
       filtered.forEach(function(titleText){
         var btn = document.createElement('button');
         btn.type = 'button';
@@ -332,6 +366,7 @@
   function openFileManagerModal(options){
     openModal(options.title || '로그 파일 관리', options.subtitle || '');
     modalState = { type: 'file-manager', panelId: options.panelId };
+
     var els = modalEls();
     var actions = document.createElement('div');
     actions.className = 'file-manager-actions';
@@ -354,6 +389,7 @@
     actions.appendChild(clearBtn);
 
     els.body.appendChild(actions);
+
     var list = document.createElement('div');
     list.className = 'modal-list';
 
@@ -366,42 +402,61 @@
       options.files.forEach(function(file, index){
         var item = document.createElement('div');
         item.className = 'file-item';
+
         var main = document.createElement('div');
         main.className = 'file-item-main';
+
         var fileName = document.createElement('div');
         fileName.className = 'file-name';
         fileName.textContent = file.name;
+
         var meta = document.createElement('div');
         meta.className = 'file-meta';
         meta.textContent = formatBytes(file.size) + ' · ' + new Date(file.lastModified || Date.now()).toLocaleString();
+
         main.appendChild(fileName);
         main.appendChild(meta);
         item.appendChild(main);
+
         var removeBtn = document.createElement('button');
         removeBtn.type = 'button';
         removeBtn.className = 'btn btn-danger';
-        removeBtn.textContent = '삭제';
+        removeBtn.textContent = '제거';
         removeBtn.addEventListener('click', function(){
           options.onRemoveIndex(index);
           openFileManagerModal(options.getFreshOptions());
         });
         item.appendChild(removeBtn);
+
         list.appendChild(item);
       });
     }
+
     els.body.appendChild(list);
   }
 
   function formatBytes(bytes){
     if(!bytes) return '0 B';
-    var units = ['B','KB','MB','GB'];
+
+    var units = ['B', 'KB', 'MB', 'GB'];
     var value = bytes;
     var unitIndex = 0;
+
     while(value >= 1024 && unitIndex < units.length - 1){
       value /= 1024;
       unitIndex += 1;
     }
+
     return (unitIndex === 0 ? value : value.toFixed(1)) + ' ' + units[unitIndex];
+  }
+
+  function formatUserLabel(user){
+    var displayName = String(user && (user.displayName || user.name) || '').trim();
+    var username = String(user && (user.username || user.email) || '').trim();
+    if(displayName && username && displayName !== username){
+      return displayName + ' (' + username + ')';
+    }
+    return displayName || username || '';
   }
 
   window.KakaoCheckUI = {
@@ -409,7 +464,6 @@
     getModalState: getModalState,
     setAuthState: setAuthState,
     setLoginReady: setLoginReady,
-    setTabState: setTabState,
     setAuthError: setAuthError,
     createPanelElement: createPanelElement,
     renderSelectedSheet: renderSelectedSheet,

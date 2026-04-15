@@ -16,6 +16,7 @@
   function bootstrap(){
     ui.setLoginReady(false);
     bindTopLevelEvents();
+
     auth.onChange(function(payload){
       ui.setAuthState(payload);
       ui.setAuthError('');
@@ -26,7 +27,6 @@
 
     auth.init().then(function(){
       ui.setLoginReady(true);
-      ui.setAuthState({ accessToken: null, user: null });
       ui.setAuthError('');
     }).catch(function(error){
       ui.setLoginReady(false);
@@ -37,11 +37,17 @@
   }
 
   function bindTopLevelEvents(){
-    document.getElementById('loginBtn').addEventListener('click', async function(){
+    document.getElementById('loginForm').addEventListener('submit', async function(event){
+      event.preventDefault();
+
       try {
+        var username = String(document.getElementById('loginUsername').value || '').trim();
+        var password = String(document.getElementById('loginPassword').value || '');
+
         ui.setAuthError('');
         ui.setLoginReady(false);
-        await auth.login();
+        await auth.login(username, password);
+        document.getElementById('loginPassword').value = '';
       } catch (error) {
         ui.setAuthError(error.message);
       } finally {
@@ -94,6 +100,7 @@
 
   function removePanel(panelId){
     if(state.panels.size <= 1) return;
+
     var panelState = state.panels.get(panelId);
     if(!panelState) return;
 
@@ -356,7 +363,7 @@
       ui.setPanelError(panelState.el, '');
       ui.setPanelStatus(panelState.el, '실행 중...', 'warn');
 
-      if(!auth.getAccessToken()) throw new Error('먼저 Google 로그인을 해주세요.');
+      if(!auth.getAccessToken()) throw new Error('먼저 로그인해주세요.');
       if(!panelState.selectedSheet) throw new Error('시트를 먼저 선택해주세요.');
       if(!panelState.files.length) throw new Error('카카오 대화 로그 파일을 하나 이상 추가해주세요.');
 
@@ -420,19 +427,20 @@
     var parsed = parser.parseChatText([
       '최도윤/0000님이 입장했습니다.',
       '김하늘5678님이 입장했습니다.',
-      '이하린1771님이 들어왔습니다',
+      '이하린1771님이 들어왔습니다.',
       '박시연님이 입장했습니다.',
       '진주연2514님이 입장했습니다.',
       '모델실험테스트님이 입장했습니다.',
       '김하늘5678님이 나갔습니다.',
-      '김하늘5678님이 입장했습니다',
-      '박시연님이 나갔습니다'
+      '김하늘5678님이 입장했습니다.',
+      '박시연님이 나갔습니다.'
     ].join('\n'));
 
     var result = matcher.buildResult(roster, parsed, {
       pendingItems: [],
       sheetTitle: '데모'
     });
+
     ui.setPanelError(panelState.el, '');
     renderRunResult(panelState, result, true, {
       enabled: false,

@@ -7,17 +7,11 @@ module.exports = function handler(req, res) {
   }
 
   var payload = {
-    spreadsheetId: String(process.env.KAKAO_CHECK_SPREADSHEET_ID || '').trim(),
-    clientId: String(process.env.KAKAO_CHECK_GOOGLE_CLIENT_ID || '').trim(),
     matchHistoryEnabled: Boolean(
       String(process.env.KAKAO_CHECK_APPS_SCRIPT_URL || '').trim() &&
       String(process.env.KAKAO_CHECK_APPS_SCRIPT_TOKEN || '').trim()
     ),
-    allowedOrigins: parseList(process.env.KAKAO_CHECK_ALLOWED_ORIGINS),
-    allowedEmailDomains: parseList(process.env.KAKAO_CHECK_ALLOWED_EMAIL_DOMAINS),
-    allowedEmails: parseList(process.env.KAKAO_CHECK_ALLOWED_EMAILS),
-    googleLoginHint: String(process.env.KAKAO_CHECK_GOOGLE_LOGIN_HINT || '').trim(),
-    googleHostedDomainHint: String(process.env.KAKAO_CHECK_GOOGLE_HOSTED_DOMAIN_HINT || '').trim()
+    allowedOrigins: parseList(process.env.KAKAO_CHECK_ALLOWED_ORIGINS)
   };
 
   res.setHeader('Content-Type', 'application/json; charset=utf-8');

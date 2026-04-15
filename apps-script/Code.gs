@@ -1,5 +1,5 @@
 var MATCH_BACKEND = {
-  defaultSpreadsheetId: '1uFP6fsP37jxplPzk3-M2ONsuXDxJ2P1b2Fr-gGMDeC4',
+  defaultStorageSpreadsheetId: '1uFP6fsP37jxplPzk3-M2ONsuXDxJ2P1b2Fr-gGMDeC4',
   historySheetName: 'MatchingHistory',
   queueSheetName: 'UnmatchedQueue',
   historyHeaders: [
@@ -62,6 +62,12 @@ function handleRequest_(request) {
   switch (request.action) {
     case 'health':
       return health_();
+    case 'listSheetTitles':
+      return listSheetTitles_(request.payload || {});
+    case 'loadRosterRows':
+      return loadRosterRows_(request.payload || {});
+    case 'writeUpdates':
+      return writeUpdates_(request.payload || {});
     case 'listPending':
       return listPending_(request.payload || {});
     case 'syncRun':
@@ -72,16 +78,107 @@ function handleRequest_(request) {
 }
 
 function health_() {
-  ensureSheet_(MATCH_BACKEND.historySheetName, MATCH_BACKEND.historyHeaders);
-  ensureSheet_(MATCH_BACKEND.queueSheetName, MATCH_BACKEND.queueHeaders);
+  ensureStorageSheet_(MATCH_BACKEND.historySheetName, MATCH_BACKEND.historyHeaders);
+  ensureStorageSheet_(MATCH_BACKEND.queueSheetName, MATCH_BACKEND.queueHeaders);
+
   return {
     enabled: true,
     ok: true
   };
 }
 
+function listSheetTitles_(payload) {
+  var spreadsheet = openSpreadsheetById_(payload.spreadsheetId, 'attendance spreadsheet');
+  return {
+    enabled: true,
+    titles: spreadsheet.getSheets().map(function(sheet) {
+      return sheet.getName();
+    })
+  };
+}
+
+function loadRosterRows_(payload) {
+  var spreadsheet = openSpreadsheetById_(payload.spreadsheetId, 'attendance spreadsheet');
+  var sheetTitle = normalizeText_(payload.sheetTitle);
+  var sheet = spreadsheet.getSheetByName(sheetTitle);
+  if (!sheet) {
+    throw new Error('Sheet not found: ' + sheetTitle);
+  }
+
+  var startRow = Math.max(Number(payload.startRow || 2), 1);
+  var columns = payload.columns || {};
+  var targetRoleText = normalizeText_(payload.targetRoleText);
+  var lastRow = sheet.getLastRow();
+
+  if (lastRow < startRow) {
+    return {
+      enabled: true,
+      rows: []
+    };
+  }
+
+  var rowCount = lastRow - startRow + 1;
+  var nameValues = readColumnValues_(sheet, startRow, columns.name, rowCount);
+  var phoneValues = readColumnValues_(sheet, startRow, columns.phone, rowCount);
+  var statusValues = readColumnValues_(sheet, startRow, columns.status, rowCount);
+  var roleValues = readColumnValues_(sheet, startRow, columns.role, rowCount);
+  var rows = [];
+
+  for (var index = 0; index < rowCount; index += 1) {
+    var name = normalizeText_(nameValues[index]);
+    var phone = normalizeText_(phoneValues[index]);
+    var statusText = normalizeText_(statusValues[index]);
+    var roleText = normalizeText_(roleValues[index]);
+
+    if (targetRoleText && roleText !== targetRoleText) continue;
+    if (!name && !phone && !statusText) continue;
+
+    rows.push({
+      rowIndex: index,
+      rowNumber: startRow + index,
+      sheetTitle: sheetTitle,
+      name: name,
+      phone: phone,
+      status: statusText,
+      role: roleText,
+      nameNormalized: normalizeName_(name)
+    });
+  }
+
+  return {
+    enabled: true,
+    rows: rows
+  };
+}
+
+function writeUpdates_(payload) {
+  var spreadsheet = openSpreadsheetById_(payload.spreadsheetId, 'attendance spreadsheet');
+  var updates = Array.isArray(payload.updates) ? payload.updates : [];
+  var totalUpdatedCells = 0;
+
+  updates.forEach(function(item) {
+    if (!item || !item.range || !Array.isArray(item.values) || !item.values.length) return;
+
+    var parsedRange = parseA1Range_(item.range);
+    var sheet = spreadsheet.getSheetByName(parsedRange.sheetTitle);
+    if (!sheet) {
+      throw new Error('Sheet not found: ' + parsedRange.sheetTitle);
+    }
+
+    sheet.getRange(parsedRange.a1Notation).setValues(item.values);
+    totalUpdatedCells += item.values.reduce(function(sum, row) {
+      return sum + (Array.isArray(row) ? row.length : 0);
+    }, 0);
+  });
+
+  return {
+    enabled: true,
+    totalUpdatedCells: totalUpdatedCells
+  };
+}
+
 function listPending_(payload) {
-  var queueSheet = ensureSheet_(MATCH_BACKEND.queueSheetName, MATCH_BACKEND.queueHeaders);
+  var queueSheet = ensureStorageSheet_(MATCH_BACKEND.queueSheetName, MATCH_BACKEND.queueHeaders);
   var rows = readSheetObjects_(queueSheet);
   var targetSheetTitle = normalizeText_(payload.sheetTitle);
 
@@ -106,7 +203,7 @@ function syncRun_(payload) {
 
   appendHistoryRow_(runId, nowIso, payload, summary, currentUnmatchedItems, resolvedPendingItems);
 
-  var queueSheet = ensureSheet_(MATCH_BACKEND.queueSheetName, MATCH_BACKEND.queueHeaders);
+  var queueSheet = ensureStorageSheet_(MATCH_BACKEND.queueSheetName, MATCH_BACKEND.queueHeaders);
   var queueRows = readSheetObjects_(queueSheet);
   var queueIndex = buildQueueIndex_(queueRows);
 
@@ -125,7 +222,7 @@ function syncRun_(payload) {
 }
 
 function appendHistoryRow_(runId, nowIso, payload, summary, currentUnmatchedItems, resolvedPendingItems) {
-  var historySheet = ensureSheet_(MATCH_BACKEND.historySheetName, MATCH_BACKEND.historyHeaders);
+  var historySheet = ensureStorageSheet_(MATCH_BACKEND.historySheetName, MATCH_BACKEND.historyHeaders);
   var details = {
     currentUnmatchedItems: currentUnmatchedItems,
     resolvedPendingItems: resolvedPendingItems
@@ -312,8 +409,8 @@ function normalizeQueueItem_(rawItem, defaultSheetTitle) {
   };
 }
 
-function ensureSheet_(sheetName, headers) {
-  var spreadsheet = getBackendSpreadsheet_();
+function ensureStorageSheet_(sheetName, headers) {
+  var spreadsheet = getStorageSpreadsheet_();
   var sheet = spreadsheet.getSheetByName(sheetName);
   if (!sheet) {
     sheet = spreadsheet.insertSheet(sheetName);
@@ -351,19 +448,70 @@ function readSheetObjects_(sheet) {
   });
 }
 
-function getBackendSpreadsheet_() {
+function getStorageSpreadsheet_() {
   var spreadsheetId = PropertiesService.getScriptProperties().getProperty('MATCH_BACKEND_SPREADSHEET_ID');
   if (!spreadsheetId) {
-    spreadsheetId = MATCH_BACKEND.defaultSpreadsheetId;
+    spreadsheetId = MATCH_BACKEND.defaultStorageSpreadsheetId;
   }
-  if (spreadsheetId) {
-    return SpreadsheetApp.openById(spreadsheetId);
+
+  return openSpreadsheetById_(spreadsheetId, 'storage spreadsheet');
+}
+
+function openSpreadsheetById_(spreadsheetId, label) {
+  var normalizedId = normalizeText_(spreadsheetId);
+  if (!normalizedId) {
+    throw new Error('Missing spreadsheet ID for ' + normalizeText_(label || 'spreadsheet') + '.');
   }
-  var active = SpreadsheetApp.getActiveSpreadsheet();
-  if (!active) {
-    throw new Error('MATCH_BACKEND_SPREADSHEET_ID script property is required for standalone Apps Script projects.');
+
+  return SpreadsheetApp.openById(normalizedId);
+}
+
+function readColumnValues_(sheet, startRow, columnLetter, rowCount) {
+  var columnNumber = columnLetterToNumber_(columnLetter);
+  if (!columnNumber) {
+    throw new Error('Invalid column: ' + columnLetter);
   }
-  return active;
+
+  return sheet
+    .getRange(startRow, columnNumber, rowCount, 1)
+    .getDisplayValues()
+    .map(function(row) {
+      return row[0];
+    });
+}
+
+function columnLetterToNumber_(value) {
+  var text = normalizeText_(value).toUpperCase();
+  if (!text) return 0;
+
+  var total = 0;
+  for (var index = 0; index < text.length; index += 1) {
+    var code = text.charCodeAt(index);
+    if (code < 65 || code > 90) {
+      throw new Error('Invalid column letter: ' + value);
+    }
+    total = (total * 26) + (code - 64);
+  }
+
+  return total;
+}
+
+function parseA1Range_(value) {
+  var raw = normalizeText_(value);
+  var bangIndex = raw.lastIndexOf('!');
+  if (bangIndex < 0) {
+    throw new Error('Invalid range: ' + raw);
+  }
+
+  var sheetTitle = raw.slice(0, bangIndex);
+  if (sheetTitle.charAt(0) === '\'' && sheetTitle.charAt(sheetTitle.length - 1) === '\'') {
+    sheetTitle = sheetTitle.slice(1, -1).replace(/''/g, '\'');
+  }
+
+  return {
+    sheetTitle: sheetTitle,
+    a1Notation: raw.slice(bangIndex + 1)
+  };
 }
 
 function verifyToken_(token) {
@@ -371,7 +519,7 @@ function verifyToken_(token) {
   if (!expected) {
     throw new Error('MATCH_BACKEND_TOKEN script property is missing.');
   }
-  if (String(token || '').trim() !== expected) {
+  if (normalizeText_(token) !== expected) {
     throw new Error('Invalid backend token.');
   }
 }
@@ -382,7 +530,8 @@ function parseGetRequest_(e) {
     token: parameter.token,
     action: normalizeText_(parameter.action) || 'health',
     payload: {
-      sheetTitle: parameter.sheetTitle
+      sheetTitle: parameter.sheetTitle,
+      spreadsheetId: parameter.spreadsheetId
     }
   };
 }

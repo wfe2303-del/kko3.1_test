@@ -42,7 +42,10 @@ body{
   gap:20px;
 }
 .login-logo{width:min(320px,72vw);height:auto;display:block}
-.login-google-btn{min-width:260px;min-height:52px;border-radius:16px;font-size:15px}
+.login-form{width:min(320px,100%);display:grid;gap:14px}
+.login-field{display:grid;gap:6px;width:100%}
+.login-label{font-size:13px;font-weight:700;color:var(--muted)}
+.login-submit-btn{width:100%;min-height:52px;border-radius:16px;font-size:15px}
 .auth-error{min-height:22px;color:var(--danger);text-align:center;white-space:pre-wrap;word-break:break-word}
 .app-shell{max-width:1480px;margin:0 auto;padding:28px 22px 56px}
 .topbar{display:flex;justify-content:space-between;gap:16px;align-items:center;margin-bottom:20px;padding:6px 0 10px}
@@ -179,5 +182,5 @@ th{position:sticky;top:0;background:#f8fafc;font-size:12px}
   .panel-summary-grid,.panel-button-grid,.result-button-grid{grid-template-columns:1fr}
   .modal-overlay{padding:12px}
   .login-card{padding:40px 22px 28px}
-  .login-google-btn{width:100%;min-width:0}
+  .login-submit-btn{width:100%;min-width:0}
 }

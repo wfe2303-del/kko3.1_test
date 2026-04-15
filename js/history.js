@@ -11,7 +11,7 @@
   async function apiFetch(url, init){
     var response = await fetch(url, Object.assign({
       cache: 'no-store',
-      credentials: 'omit',
+      credentials: 'same-origin',
       referrerPolicy: 'no-referrer',
       headers: {
         'Accept': 'application/json'

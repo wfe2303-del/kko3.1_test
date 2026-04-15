@@ -4,16 +4,25 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <meta name="referrer" content="no-referrer" />
-  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' https://accounts.google.com; connect-src 'self' https://accounts.google.com https://oauth2.googleapis.com https://www.googleapis.com https://sheets.googleapis.com; img-src 'self' data: https:; style-src 'self'; frame-src https://accounts.google.com; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'; upgrade-insecure-requests" />
-  <title>클어 출석부</title>
-  <script src="https://accounts.google.com/gsi/client" async defer></script>
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; connect-src 'self'; img-src 'self' data: https:; style-src 'self'; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'; upgrade-insecure-requests" />
+  <title>카카오 입장 체크</title>
   <link rel="stylesheet" href="./styles.css" />
 </head>
 <body>
   <section id="loginScreen" class="login-screen">
     <div class="login-card">
       <img class="login-logo" src="./assets/classaround-logo.png" alt="ClassAround" />
-      <button id="loginBtn" class="btn btn-primary login-google-btn" type="button">Google 계정으로 로그인</button>
+      <form id="loginForm" class="login-form">
+        <label class="login-field">
+          <span class="login-label">아이디</span>
+          <input id="loginUsername" class="input" type="text" autocomplete="username" />
+        </label>
+        <label class="login-field">
+          <span class="login-label">비밀번호</span>
+          <input id="loginPassword" class="input" type="password" autocomplete="current-password" />
+        </label>
+        <button id="loginBtn" class="btn btn-primary login-submit-btn" type="submit">로그인</button>
+      </form>
       <div id="authErr" class="auth-error"></div>
     </div>
   </section>
@@ -31,7 +40,7 @@
 
     <section class="card toolbar-card">
       <div class="toolbar-row">
-        <button id="refreshTabsBtn" class="btn" type="button">탭 목록 새로고침</button>
+        <button id="refreshTabsBtn" class="btn" type="button">시트 목록 새로고침</button>
         <button id="addPanelBtn" class="btn btn-primary" type="button">패널 추가</button>
       </div>
     </section>
@@ -45,13 +54,13 @@
         <div>
           <h2 class="panel-title"></h2>
         </div>
-        <button class="btn btn-danger panel-remove-btn" type="button">패널 삭제</button>
+        <button class="btn btn-danger panel-remove-btn" type="button">패널 제거</button>
       </div>
 
       <div class="panel-summary-grid">
         <div class="summary-box">
-          <span class="summary-label">선택된 탭</span>
-          <strong class="summary-value js-selected-sheet">탭 미선택</strong>
+          <span class="summary-label">선택 시트</span>
+          <strong class="summary-value js-selected-sheet">선택되지 않음</strong>
         </div>
         <div class="summary-box">
           <span class="summary-label">로그 파일</span>
@@ -60,7 +69,7 @@
       </div>
 
       <div class="panel-button-grid">
-        <button class="btn btn-wide js-open-sheet-modal-btn" type="button">탭 목록 열기</button>
+        <button class="btn btn-wide js-open-sheet-modal-btn" type="button">시트 선택</button>
         <button class="btn btn-wide js-open-file-modal-btn" type="button">로그 파일 관리</button>
       </div>
 
@@ -69,7 +78,7 @@
       <div class="panel-actions">
         <label class="check-row">
           <input class="js-preview-only" type="checkbox" />
-          <span>열람용(시트 미기록)</span>
+          <span>미리보기만 하고 시트는 수정하지 않기</span>
         </label>
         <button class="btn btn-primary js-run-btn" type="button">실행</button>
         <button class="btn js-demo-btn" type="button">데모</button>
