@@ -349,7 +349,7 @@
       }
 
       if(!rosterResponse.rows.length){
-        throw new Error('선택한 시트에서 불러온 수강생 명단이 없습니다. Apps Script 접근 권한과 역할 열(N열) 값을 확인해 주세요.');
+        throw new Error('선택한 시트에서 N열이 수강생인 명단을 찾지 못했습니다. Apps Script 접근 권한과 N열 값을 확인해 주세요.');
       }
 
       result = matcher.buildResult(rosterResponse.rows, parsed, {
@@ -697,8 +697,29 @@
       title: '미매칭 수동 처리',
       subtitle: panelState.selectedSheet + ' · 현재 미매칭 ' + result.currentUnmatchedItems.length + '건',
       render: function(body){
+        var toolbar = document.createElement('div');
         var list = document.createElement('div');
         var notice;
+        var toggleAllBtn;
+        var bulkExcludeBtn;
+        var selectedQueueKeys = new Set();
+        var checkboxEntries = [];
+
+        function syncSelectionUi(){
+          var selectedCount = selectedQueueKeys.size;
+          var totalCount = result.currentUnmatchedItems.length;
+
+          if(toggleAllBtn){
+            toggleAllBtn.textContent = selectedCount && selectedCount === totalCount ? '전체 선택 해제' : '전체 선택';
+          }
+          if(bulkExcludeBtn){
+            bulkExcludeBtn.disabled = execution.previewOnly || !selectedCount;
+            bulkExcludeBtn.textContent = selectedCount ? ('선택 ' + selectedCount + '건 코칭스태프로 제외') : '선택 항목 코칭스태프로 제외';
+          }
+          checkboxEntries.forEach(function(entry){
+            entry.checkbox.checked = selectedQueueKeys.has(entry.item.queueKey);
+          });
+        }
 
         if(execution.previewOnly){
           notice = document.createElement('div');
@@ -712,9 +733,45 @@
           return;
         }
 
+        toolbar.className = 'panel-secondary-actions';
+        toggleAllBtn = document.createElement('button');
+        toggleAllBtn.type = 'button';
+        toggleAllBtn.className = 'btn';
+        toggleAllBtn.addEventListener('click', function(){
+          if(selectedQueueKeys.size === result.currentUnmatchedItems.length){
+            selectedQueueKeys.clear();
+          } else {
+            result.currentUnmatchedItems.forEach(function(item){
+              selectedQueueKeys.add(item.queueKey);
+            });
+          }
+          syncSelectionUi();
+        });
+
+        bulkExcludeBtn = document.createElement('button');
+        bulkExcludeBtn.type = 'button';
+        bulkExcludeBtn.className = 'btn';
+        bulkExcludeBtn.addEventListener('click', function(){
+          var items = result.currentUnmatchedItems.filter(function(item){
+            return selectedQueueKeys.has(item.queueKey);
+          });
+
+          if(!items.length) return;
+          if(window.confirm('선택한 ' + items.length + '건을 코칭스태프로 제외할까요?')){
+            applyBulkExclude(panelState.id, items);
+          }
+        });
+
+        toolbar.appendChild(toggleAllBtn);
+        toolbar.appendChild(bulkExcludeBtn);
+        body.appendChild(toolbar);
+
         list.className = 'manual-review-list';
         result.currentUnmatchedItems.forEach(function(item){
           var card = document.createElement('div');
+          var selectionWrap = document.createElement('label');
+          var checkbox = document.createElement('input');
+          var checkboxText = document.createElement('span');
           var title = document.createElement('strong');
           var meta1 = document.createElement('div');
           var meta2 = document.createElement('div');
@@ -723,6 +780,17 @@
           var excludeBtn = document.createElement('button');
 
           card.className = 'manual-card';
+          selectionWrap.className = 'check-row';
+          checkbox.type = 'checkbox';
+          checkbox.addEventListener('change', function(){
+            if(checkbox.checked){
+              selectedQueueKeys.add(item.queueKey);
+            } else {
+              selectedQueueKeys.delete(item.queueKey);
+            }
+            syncSelectionUi();
+          });
+          checkboxText.textContent = '코칭스태프 일괄 제외 대상에 포함';
           title.textContent = item.label;
           meta1.className = 'manual-meta';
           meta2.className = 'manual-meta';
@@ -748,6 +816,10 @@
             }
           });
 
+          selectionWrap.appendChild(checkbox);
+          selectionWrap.appendChild(checkboxText);
+          checkboxEntries.push({ item: item, checkbox: checkbox });
+          card.appendChild(selectionWrap);
           card.appendChild(title);
           card.appendChild(meta1);
           card.appendChild(meta2);
@@ -758,6 +830,7 @@
         });
 
         body.appendChild(list);
+        syncSelectionUi();
       }
     });
   }
@@ -837,7 +910,7 @@
       }
 
       if(actionType === 'match-student' && targetRow){
-        await sheets.writeUpdates([matcher.createStatusUpdate(targetRow)]);
+        await sheets.writeUpdates(matcher.createStatusUpdatesForRow(targetRow, execution.rosterRows));
       }
 
       execution.manualRules = upsertManualRule(execution.manualRules, response.manualRule || {});
@@ -881,6 +954,92 @@
       openManualReview(panelId);
     } catch (error) {
       ui.setPanelStatus(panelState.el, '수동 처리 실패', 'bad');
+      ui.setPanelError(panelState.el, toUserMessage(error));
+    } finally {
+      ui.hideLoading();
+    }
+  }
+
+  async function applyBulkExclude(panelId, queueItems){
+    var panelState = state.panels.get(panelId);
+    var execution;
+    var snapshotError = '';
+    var selectedKeys;
+    var responses = [];
+    var index;
+
+    if(!panelState || !panelState.lastExecution || !Array.isArray(queueItems) || !queueItems.length){
+      return;
+    }
+
+    execution = panelState.lastExecution;
+    selectedKeys = new Set(queueItems.map(function(item){
+      return item.queueKey;
+    }).filter(Boolean));
+
+    try {
+      ui.showLoading('코칭스태프 일괄 제외 저장 중', '선택한 미매칭 항목을 한 번에 제외하고 있습니다.');
+      ui.setPanelError(panelState.el, '');
+      ui.setPanelStatus(panelState.el, '일괄 제외 저장 중...', 'warn');
+
+      for(index = 0; index < queueItems.length; index += 1){
+        var response = await history.applyManualAction({
+          sheetTitle: panelState.selectedSheet,
+          item: queueItems[index],
+          actionType: 'exclude-staff',
+          targetRow: null
+        });
+
+        if(response && response.enabled === false){
+          throw new Error(response.message || '일괄 제외를 저장하지 못했습니다.');
+        }
+        responses.push(response);
+      }
+
+      responses.forEach(function(response){
+        execution.manualRules = upsertManualRule(execution.manualRules, response && response.manualRule ? response.manualRule : {});
+      });
+      execution.pendingItems = execution.pendingItems.filter(function(item){
+        return !selectedKeys.has(item.queueKey);
+      });
+      execution.result = matcher.buildResult(execution.rosterRows, execution.parsed, {
+        pendingItems: execution.pendingItems,
+        manualRules: execution.manualRules,
+        sheetTitle: panelState.selectedSheet
+      });
+
+      if(execution.historyState){
+        execution.historyState.pendingCount = Math.max(0, Number(execution.historyState.pendingCount || 0) - responses.length);
+        execution.historyState.openCount = Math.max(0, Number(execution.historyState.openCount || 0) - responses.length);
+        execution.historyState.manualRuleCount = execution.manualRules.length;
+        execution.historyState.synced = true;
+        execution.historyState.syncError = '';
+      }
+
+      try {
+        await history.saveSnapshot({
+          sheetTitle: panelState.selectedSheet,
+          previewOnly: execution.previewOnly,
+          snapshot: buildSnapshotPayload(panelState, execution)
+        });
+      } catch (error) {
+        snapshotError = toUserMessage(error);
+      }
+
+      if(execution.historyState){
+        execution.historyState.syncError = snapshotError;
+      }
+
+      renderRunResult(panelState);
+      if(snapshotError){
+        ui.setPanelStatus(panelState.el, '코칭스태프 일괄 제외 완료 / 저장 경고', 'warn');
+        ui.setPanelError(panelState.el, snapshotError);
+      } else {
+        ui.setPanelStatus(panelState.el, '코칭스태프 일괄 제외 완료', 'ok');
+      }
+      openManualReview(panelId);
+    } catch (error) {
+      ui.setPanelStatus(panelState.el, '일괄 제외 실패', 'bad');
       ui.setPanelError(panelState.el, toUserMessage(error));
     } finally {
       ui.hideLoading();

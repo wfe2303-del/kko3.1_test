@@ -74,7 +74,7 @@ async function handleGet(req, res, user, spreadsheetId){
       sheetTitle: sheetTitle,
       startRow: 2,
       targetRoleText: '수강생',
-      allowRoleFallback: true,
+      allowRoleFallback: false,
       columns: {
         name: 'C',
         phone: 'D',
