@@ -535,14 +535,28 @@
       savedAt: new Date().toISOString(),
       execution: {
         previewOnly: !!execution.previewOnly,
-        parsed: clonePlain(execution.parsed || { events: [], joinedCount: 0, leftCount: 0 }),
-        rosterRows: clonePlain(execution.rosterRows || []),
+        parsed: parser.compactParsed(execution.parsed || { events: [], joinedCount: 0, leftCount: 0 }),
+        rosterRows: compactRosterRows(execution.rosterRows || []),
         sheetMeta: clonePlain(execution.sheetMeta || {}),
         pendingItems: clonePlain(execution.pendingItems || []),
         manualRules: clonePlain(execution.manualRules || []),
         historyState: historyState
       }
     };
+  }
+
+  function compactRosterRows(rows){
+    return (Array.isArray(rows) ? rows : []).map(function(row){
+      return {
+        rowNumber: Number(row && row.rowNumber || 0),
+        sheetTitle: String(row && row.sheetTitle || '').trim(),
+        name: String(row && row.name || '').trim(),
+        phone: String(row && row.phone || '').trim(),
+        nameNormalized: utils.normalizeName(row && (row.nameNormalized || row.name) || '')
+      };
+    }).filter(function(row){
+      return row.rowNumber && row.nameNormalized;
+    });
   }
 
   function clonePlain(value){

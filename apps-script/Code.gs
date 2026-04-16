@@ -290,17 +290,22 @@ function syncRun_(payload) {
   var resolvedPendingItems = Array.isArray(payload.resolvedPendingItems) ? payload.resolvedPendingItems : [];
   var queueSheet = ensureStorageSheet_(MATCH_BACKEND.queueSheetName, MATCH_BACKEND.queueHeaders);
   var normalizedSheetTitle = normalizeText_(payload.sheetTitle);
+  var queueState;
   var snapshotSavedAt;
   var summaryRow;
   var resolvedCount;
   var openedCount;
-  var openCount;
+  var queueCounts;
 
-  resolvedCount = resolveQueueItems_(queueSheet, resolvedPendingItems, nowIso);
-  openedCount = upsertQueueItems_(queueSheet, currentUnmatchedItems, nowIso, payload.sheetTitle);
-  summaryRow = refreshSummaryForSheet_(normalizedSheetTitle, {
-    lastSavedAt: nowIso
-  });
+  if (!normalizedSheetTitle) {
+    throw new Error('Sheet title is required.');
+  }
+
+  queueState = readQueueStateForSheet_(queueSheet, normalizedSheetTitle);
+  resolvedCount = resolveQueueItemsInState_(queueState, resolvedPendingItems, nowIso);
+  openedCount = upsertQueueItemsInState_(queueState, currentUnmatchedItems, nowIso, payload.sheetTitle);
+  flushQueueState_(queueSheet, queueState);
+  queueCounts = buildQueueCounts_(queueState.rows);
   snapshotSavedAt = saveLatestSnapshot_(normalizedSheetTitle, payload.snapshot, {
     savedAt: normalizeText_(payload.executedAt) || nowIso,
     actorEmail: normalizeText_(payload.actorEmail),
@@ -308,15 +313,14 @@ function syncRun_(payload) {
     previewOnly: !!payload.previewOnly,
     summary: summary,
     metrics: {
-      openCount: Number(summaryRow.openCount || 0),
-      manualRuleCount: Number(summaryRow.manualRuleCount || 0)
+      openCount: Number(queueCounts.openCount || 0),
+      manualRuleCount: Number(queueCounts.manualRuleCount || 0)
     }
   });
-  summaryRow = refreshSummaryForSheet_(normalizedSheetTitle, {
+  summaryRow = writeSummarySnapshotState_(normalizedSheetTitle, queueCounts, {
     lastSavedAt: nowIso,
     lastSnapshotAt: snapshotSavedAt
   });
-  openCount = summaryRow.openCount;
   invalidateStorageCaches_(normalizedSheetTitle);
 
   return {
@@ -324,7 +328,7 @@ function syncRun_(payload) {
     synced: true,
     resolvedCount: resolvedCount,
     openedCount: openedCount,
-    openCount: openCount,
+    openCount: Number(summaryRow.openCount || 0),
     manualRuleCount: Number(summaryRow.manualRuleCount || 0),
     savedAt: snapshotSavedAt
   };
@@ -333,6 +337,8 @@ function syncRun_(payload) {
 function saveSnapshot_(payload) {
   var sheetTitle = normalizeText_(payload.sheetTitle);
   var nowIso = normalizeText_(payload.savedAt) || new Date().toISOString();
+  var queueSheet = ensureStorageSheet_(MATCH_BACKEND.queueSheetName, MATCH_BACKEND.queueHeaders);
+  var queueCounts = buildQueueCounts_(readSheetObjectsByMatch_(queueSheet, 3, sheetTitle));
   var snapshotSavedAt;
   var summaryRow;
 
@@ -340,20 +346,17 @@ function saveSnapshot_(payload) {
     throw new Error('Sheet title is required.');
   }
 
-  summaryRow = refreshSummaryForSheet_(sheetTitle, {
-    lastSavedAt: nowIso
-  });
   snapshotSavedAt = saveLatestSnapshot_(sheetTitle, payload.snapshot, {
     savedAt: nowIso,
     actorEmail: normalizeText_(payload.actorEmail),
     actorName: normalizeText_(payload.actorName),
     previewOnly: !!payload.previewOnly,
     metrics: {
-      openCount: Number(summaryRow.openCount || 0),
-      manualRuleCount: Number(summaryRow.manualRuleCount || 0)
+      openCount: Number(queueCounts.openCount || 0),
+      manualRuleCount: Number(queueCounts.manualRuleCount || 0)
     }
   });
-  summaryRow = refreshSummaryForSheet_(sheetTitle, {
+  summaryRow = writeSummarySnapshotState_(sheetTitle, queueCounts, {
     lastSavedAt: nowIso,
     lastSnapshotAt: snapshotSavedAt
   });
@@ -370,8 +373,11 @@ function applyManualAction_(payload) {
   var queueSheet = ensureStorageSheet_(MATCH_BACKEND.queueSheetName, MATCH_BACKEND.queueHeaders);
   var nowIso = new Date().toISOString();
   var item = normalizeQueueItem_(payload.item, payload.sheetTitle);
-  var existing = findQueueRowByQueueKey_(queueSheet, item.queueKey);
+  var normalizedSheetTitle = normalizeText_(item.sheetTitle || payload.sheetTitle);
+  var queueState = readQueueStateForSheet_(queueSheet, normalizedSheetTitle);
+  var existing = queueState.byKey[item.queueKey];
   var targetRow = payload.targetRow || {};
+  var summaryRow;
 
   if (!item.queueKey) {
     throw new Error('Invalid queue item.');
@@ -379,10 +385,11 @@ function applyManualAction_(payload) {
 
   if (!existing) {
     existing = createQueueRowObject_(item);
-    existing.rowNumber = queueSheet.getLastRow() + 1;
     existing.firstSeenAt = nowIso;
     existing.lastSeenAt = nowIso;
-    queueSheet.appendRow(queueObjectToRow_(existing));
+    queueState.rows.push(existing);
+    queueState.byKey[item.queueKey] = existing;
+    queueState.newRows.push(existing);
   }
 
   existing.sheetTitle = item.sheetTitle;
@@ -419,16 +426,18 @@ function applyManualAction_(payload) {
     throw new Error('Unsupported manual action.');
   }
 
-  writeQueueRow_(queueSheet, existing);
-  refreshSummaryForSheet_(normalizeText_(item.sheetTitle), {
+  markQueueStateDirty_(queueState, existing);
+  flushQueueState_(queueSheet, queueState);
+  summaryRow = writeSummarySnapshotState_(normalizedSheetTitle, buildQueueCounts_(queueState.rows), {
     lastSavedAt: nowIso
   });
-  invalidateStorageCaches_(normalizeText_(item.sheetTitle));
+  invalidateStorageCaches_(normalizedSheetTitle);
 
   return {
     enabled: true,
     queueItem: queueRowToEntry_(existing),
-    manualRule: queueRowToManualRule_(existing)
+    manualRule: queueRowToManualRule_(existing),
+    summary: summaryRowToOverview_(summaryRow)
   };
 }
 
@@ -466,6 +475,8 @@ function getStoredSheetData_(payload) {
   var sheetTitle = normalizeText_(payload.sheetTitle);
   var cacheKey = buildCacheKey_('storedSheetData', sheetTitle);
   var cached = getCachedJson_(cacheKey);
+  var queueSheet;
+  var queueCounts;
   var summaryRow;
   var snapshot;
   var response;
@@ -478,11 +489,16 @@ function getStoredSheetData_(payload) {
     throw new Error('Sheet title is required.');
   }
 
+  queueSheet = ensureStorageSheet_(MATCH_BACKEND.queueSheetName, MATCH_BACKEND.queueHeaders);
+  queueCounts = buildQueueCounts_(readSheetObjectsByMatch_(queueSheet, 3, sheetTitle));
   summaryRow = findSummaryRowBySheetTitle_(ensureStorageSheet_(MATCH_BACKEND.summarySheetName, MATCH_BACKEND.summaryHeaders), sheetTitle);
-  if (!summaryRow) {
-    summaryRow = refreshSummaryForSheet_(sheetTitle, {});
-  }
   snapshot = loadLatestSnapshot_(sheetTitle);
+  if (!summaryRow || Number(summaryRow.openCount || 0) !== queueCounts.openCount || Number(summaryRow.manualRuleCount || 0) !== queueCounts.manualRuleCount || !!summaryRowToOverview_(summaryRow).snapshotReady !== !!snapshot) {
+    summaryRow = writeSummarySnapshotState_(sheetTitle, queueCounts, {
+      lastSavedAt: normalizeText_(summaryRow && summaryRow.lastSavedAt) || normalizeText_(snapshot && snapshot.savedAt),
+      lastSnapshotAt: snapshot ? normalizeText_(snapshot.savedAt) : normalizeText_(summaryRow && summaryRow.lastSnapshotAt)
+    });
+  }
 
   response = {
     enabled: true,
@@ -565,6 +581,132 @@ function upsertQueueItems_(queueSheet, currentUnmatchedItems, nowIso, defaultShe
   });
 
   return count;
+}
+
+function readQueueStateForSheet_(queueSheet, sheetTitle) {
+  var normalizedSheetTitle = normalizeText_(sheetTitle);
+  var rows = normalizedSheetTitle ? readSheetObjectsByMatch_(queueSheet, 3, normalizedSheetTitle) : [];
+  return {
+    sheetTitle: normalizedSheetTitle,
+    rows: rows,
+    byKey: buildQueueIndex_(rows),
+    dirtyRowsByNumber: {},
+    newRows: []
+  };
+}
+
+function resolveQueueItemsInState_(queueState, resolvedPendingItems, nowIso) {
+  var count = 0;
+
+  resolvedPendingItems.forEach(function(rawItem) {
+    var item = normalizeQueueItem_(rawItem, queueState.sheetTitle);
+    var existing = queueState.byKey[item.queueKey];
+    if (!item.queueKey || !existing || isManualRuleStatus_(existing.status)) return;
+
+    if (String(existing.status || '').trim() !== 'RESOLVED') {
+      count += 1;
+    }
+
+    existing.status = 'RESOLVED';
+    existing.lastSeenAt = nowIso;
+    existing.resolvedAt = nowIso;
+    existing.contextJson = safeJson_(item);
+    markQueueStateDirty_(queueState, existing);
+  });
+
+  return count;
+}
+
+function upsertQueueItemsInState_(queueState, currentUnmatchedItems, nowIso, defaultSheetTitle) {
+  var count = 0;
+
+  currentUnmatchedItems.forEach(function(rawItem) {
+    var item = normalizeQueueItem_(rawItem, defaultSheetTitle || queueState.sheetTitle);
+    var existing;
+    if (!item.queueKey) return;
+
+    existing = queueState.byKey[item.queueKey];
+    if (existing) {
+      existing.sheetTitle = item.sheetTitle || existing.sheetTitle;
+      existing.category = item.category;
+      existing.name = item.name;
+      existing.nameNormalized = item.nameNormalized;
+      existing.phone4 = item.phone4;
+      existing.label = item.label;
+      existing.reason = item.reason;
+      existing.lastSeenAt = nowIso;
+      existing.attemptCount = Number(existing.attemptCount || 0) + 1;
+      existing.contextJson = safeJson_(item);
+
+      if (!isManualRuleStatus_(existing.status)) {
+        existing.status = 'OPEN';
+        existing.resolvedAt = '';
+        existing.resolutionType = '';
+        existing.resolutionLabel = '';
+        existing.resolutionTargetRow = '';
+        existing.resolutionTargetName = '';
+        existing.resolutionTargetPhone = '';
+        existing.handledBy = '';
+        existing.handledAt = '';
+        count += 1;
+      }
+
+      markQueueStateDirty_(queueState, existing);
+      return;
+    }
+
+    existing = createQueueRowObject_(item);
+    existing.status = 'OPEN';
+    existing.firstSeenAt = nowIso;
+    existing.lastSeenAt = nowIso;
+    existing.attemptCount = 1;
+    existing.contextJson = safeJson_(item);
+    queueState.rows.push(existing);
+    queueState.byKey[item.queueKey] = existing;
+    queueState.newRows.push(existing);
+    count += 1;
+  });
+
+  return count;
+}
+
+function markQueueStateDirty_(queueState, row) {
+  var rowNumber = Number(row && row.rowNumber || 0);
+  if (!rowNumber) return;
+  queueState.dirtyRowsByNumber[rowNumber] = row;
+}
+
+function flushQueueState_(queueSheet, queueState) {
+  var dirtyRows = objectValues_(queueState.dirtyRowsByNumber);
+  var startRow;
+
+  if (dirtyRows.length) {
+    writeRowsByObjects_(queueSheet, dirtyRows, queueObjectToRow_, MATCH_BACKEND.queueHeaders.length);
+  }
+
+  if (!queueState.newRows.length) {
+    return;
+  }
+
+  startRow = queueSheet.getLastRow() + 1;
+  queueState.newRows.forEach(function(row, index) {
+    row.rowNumber = startRow + index;
+  });
+  queueSheet
+    .getRange(startRow, 1, queueState.newRows.length, MATCH_BACKEND.queueHeaders.length)
+    .setValues(queueState.newRows.map(queueObjectToRow_));
+}
+
+function buildQueueCounts_(queueRows) {
+  return (queueRows || []).reduce(function(counts, row) {
+    var status = String(row && row.status || '').trim();
+    if (status === 'OPEN') counts.openCount += 1;
+    if (isManualRuleStatus_(status)) counts.manualRuleCount += 1;
+    return counts;
+  }, {
+    openCount: 0,
+    manualRuleCount: 0
+  });
 }
 
 function countOpenQueueItems_(queueIndex, sheetTitle) {
@@ -907,6 +1049,7 @@ function saveLatestSnapshot_(sheetTitle, snapshot, options) {
   var normalizedSheetTitle = normalizeText_(sheetTitle);
   var snapshotSheet = ensureStorageSheet_(MATCH_BACKEND.snapshotSheetName, MATCH_BACKEND.snapshotHeaders);
   var savedAt = normalizeText_(options && options.savedAt) || new Date().toISOString();
+  var existingRows;
   var raw = safeJson_(buildSnapshotEnvelope_(normalizedSheetTitle, snapshot, options, savedAt));
   var chunks;
   var rows;
@@ -919,7 +1062,7 @@ function saveLatestSnapshot_(sheetTitle, snapshot, options) {
   }
 
   chunks = chunkText_(raw, MATCH_BACKEND.snapshotChunkSize);
-  deleteSnapshotRows_(snapshotSheet, normalizedSheetTitle);
+  existingRows = readSheetObjectsByMatch_(snapshotSheet, 1, normalizedSheetTitle);
   rows = chunks.map(function(chunk, index) {
     return [
       normalizedSheetTitle,
@@ -932,10 +1075,7 @@ function saveLatestSnapshot_(sheetTitle, snapshot, options) {
       chunk
     ];
   });
-
-  snapshotSheet
-    .getRange(snapshotSheet.getLastRow() + 1, 1, rows.length, MATCH_BACKEND.snapshotHeaders.length)
-    .setValues(rows);
+  replaceMatchedRows_(snapshotSheet, existingRows, rows, MATCH_BACKEND.snapshotHeaders.length);
 
   return savedAt;
 }
@@ -1018,6 +1158,123 @@ function deleteSnapshotRows_(sheet, sheetTitle) {
   deleteRowsDescending_(sheet, rows.map(function(row) {
     return Number(row.rowNumber || 0);
   }));
+}
+
+function replaceMatchedRows_(sheet, existingRows, newRows, columnCount) {
+  var existingRowNumbers = (existingRows || []).map(function(row) {
+    return Number(row && row.rowNumber || 0);
+  }).filter(function(rowNumber) {
+    return rowNumber > 1;
+  }).sort(function(left, right) {
+    return left - right;
+  });
+  var reusableCount = Math.min(existingRowNumbers.length, (newRows || []).length);
+
+  if (reusableCount) {
+    writeRowDataByNumbers_(sheet, existingRowNumbers.slice(0, reusableCount), newRows.slice(0, reusableCount), columnCount);
+  }
+
+  if (existingRowNumbers.length > reusableCount) {
+    clearRowsByNumbers_(sheet, existingRowNumbers.slice(reusableCount), columnCount);
+  }
+
+  if ((newRows || []).length > reusableCount) {
+    sheet
+      .getRange(sheet.getLastRow() + 1, 1, newRows.length - reusableCount, columnCount)
+      .setValues(newRows.slice(reusableCount));
+  }
+}
+
+function writeSummarySnapshotState_(sheetTitle, queueCounts, options) {
+  var normalizedSheetTitle = normalizeText_(sheetTitle);
+  var summarySheet = ensureStorageSheet_(MATCH_BACKEND.summarySheetName, MATCH_BACKEND.summaryHeaders);
+  var summaryRow = findSummaryRowBySheetTitle_(summarySheet, normalizedSheetTitle);
+  var lastSnapshotAt = normalizeText_(options && options.lastSnapshotAt) || normalizeText_(summaryRow && summaryRow.lastSnapshotAt);
+  var rowObject = {
+    rowNumber: summaryRow ? summaryRow.rowNumber : (summarySheet.getLastRow() + 1),
+    sheetTitle: normalizedSheetTitle,
+    snapshotReady: !!lastSnapshotAt,
+    openCount: Number(queueCounts && queueCounts.openCount || 0),
+    manualRuleCount: Number(queueCounts && queueCounts.manualRuleCount || 0),
+    lastSavedAt: normalizeText_(options && options.lastSavedAt) || normalizeText_(summaryRow && summaryRow.lastSavedAt),
+    lastSnapshotAt: lastSnapshotAt
+  };
+
+  if (summaryRow) {
+    summarySheet.getRange(rowObject.rowNumber, 1, 1, MATCH_BACKEND.summaryHeaders.length).setValues([summaryObjectToRow_(rowObject)]);
+  } else {
+    summarySheet.appendRow(summaryObjectToRow_(rowObject));
+  }
+
+  return rowObject;
+}
+
+function writeRowsByObjects_(sheet, rows, mapper, columnCount) {
+  var sorted = (rows || []).slice().filter(function(row) {
+    return Number(row && row.rowNumber || 0) > 1;
+  }).sort(function(left, right) {
+    return Number(left.rowNumber || 0) - Number(right.rowNumber || 0);
+  });
+
+  writeRowDataByNumbers_(sheet, sorted.map(function(row) {
+    return Number(row.rowNumber || 0);
+  }), sorted.map(function(row) {
+    return mapper(row);
+  }), columnCount);
+}
+
+function writeRowDataByNumbers_(sheet, rowNumbers, rowValues, columnCount) {
+  var groups = [];
+  var current = null;
+
+  (rowNumbers || []).forEach(function(rowNumber, index) {
+    var values = rowValues[index];
+    if (!current || rowNumber !== current.lastRow + 1) {
+      if (current) groups.push(current);
+      current = {
+        startRow: rowNumber,
+        lastRow: rowNumber,
+        values: [values]
+      };
+      return;
+    }
+
+    current.lastRow = rowNumber;
+    current.values.push(values);
+  });
+
+  if (current) {
+    groups.push(current);
+  }
+
+  groups.forEach(function(group) {
+    sheet
+      .getRange(group.startRow, 1, group.values.length, columnCount)
+      .setValues(group.values);
+  });
+}
+
+function clearRowsByNumbers_(sheet, rowNumbers, columnCount) {
+  var blanks = (rowNumbers || []).map(function() {
+    return buildBlankRow_(columnCount);
+  });
+
+  if (!blanks.length) {
+    return;
+  }
+
+  writeRowDataByNumbers_(sheet, rowNumbers, blanks, columnCount);
+}
+
+function buildBlankRow_(columnCount) {
+  var row = [];
+  var index;
+
+  for (index = 0; index < Number(columnCount || 0); index += 1) {
+    row.push('');
+  }
+
+  return row;
 }
 
 function deleteRowsDescending_(sheet, rowNumbers) {

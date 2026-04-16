@@ -25,7 +25,7 @@
     options = options || {};
     pendingItems = Array.isArray(options.pendingItems) ? options.pendingItems : [];
     manualRules = Array.isArray(options.manualRules) ? options.manualRules : [];
-    summary = parser.summarizeActiveState(parsed.events || []);
+    summary = parser.getActiveSummary(parsed || {});
     rosterIndex = buildRosterIndex(Array.isArray(rosterRows) ? rosterRows : []);
 
     rosterIndex.rows.forEach(function(row){
@@ -86,13 +86,14 @@
   }
 
   function buildRosterIndex(rosterRows){
+    var normalizedRows = rosterRows.map(normalizeRosterRow).filter(Boolean);
     var byName = new Map();
     var byRowNumber = new Map();
     var byIdentity = new Map();
     var nameCount = new Map();
     var uniqueIdentityCountByName = new Map();
 
-    rosterRows.forEach(function(row){
+    normalizedRows.forEach(function(row){
       var key = row && row.nameNormalized;
       var identityKey;
       if(!row) return;
@@ -119,13 +120,29 @@
     });
 
     return {
-      rows: rosterRows.slice(),
+      rows: normalizedRows,
       byName: byName,
       byRowNumber: byRowNumber,
       byIdentity: byIdentity,
       nameCount: nameCount,
       uniqueIdentityCountByName: uniqueIdentityCountByName
     };
+  }
+
+  function normalizeRosterRow(row){
+    var base;
+
+    if(!row || typeof row !== 'object'){
+      return null;
+    }
+
+    base = Object.assign({}, row);
+    base.rowNumber = Number(base.rowNumber || 0);
+    base.sheetTitle = String(base.sheetTitle || '').trim();
+    base.name = String(base.name || '').trim();
+    base.phone = String(base.phone || '').trim();
+    base.nameNormalized = utils.normalizeName(base.nameNormalized || base.name);
+    return base;
   }
 
   function buildRosterReportItem(row, activeSummary, rosterIndex){
