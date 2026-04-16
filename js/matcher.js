@@ -25,7 +25,9 @@
     options = options || {};
     pendingItems = Array.isArray(options.pendingItems) ? options.pendingItems : [];
     manualRules = Array.isArray(options.manualRules) ? options.manualRules : [];
-    summary = parser.getActiveSummary(parsed || {});
+    summary = typeof parser.getActiveSummary === 'function'
+      ? parser.getActiveSummary(parsed || {})
+      : parser.summarizeActiveState(Array.isArray(parsed && parsed.events) ? parsed.events : []);
     rosterIndex = buildRosterIndex(Array.isArray(rosterRows) ? rosterRows : []);
 
     rosterIndex.rows.forEach(function(row){

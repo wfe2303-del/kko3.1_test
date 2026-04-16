@@ -99,13 +99,11 @@
   }
 
   async function combineFiles(files){
-    var chunks = [];
-    var index;
-    for(index = 0; index < files.length; index += 1){
-      var file = files[index];
+    var chunks = await Promise.all((Array.isArray(files) ? files : []).map(async function(file){
       var text = await utils.readFileAsText(file);
-      chunks.push(/\.csv$/i.test(file.name) ? extractLinesFromCsv(text) : text);
-    }
+      return /\.csv$/i.test(file.name) ? extractLinesFromCsv(text) : text;
+    }));
+
     return chunks.filter(Boolean).join('\n');
   }
 
@@ -150,11 +148,102 @@
     };
   }
 
+  function serializeMapOfSets(map){
+    var rows = [];
+
+    if(!map || typeof map.forEach !== 'function'){
+      return rows;
+    }
+
+    map.forEach(function(value, key){
+      var markers = Array.from(value || []).map(function(item){
+        return String(item || '').trim();
+      }).filter(Boolean);
+
+      key = String(key || '').trim();
+      if(!key || !markers.length) return;
+      rows.push([key, markers]);
+    });
+
+    return rows;
+  }
+
+  function restoreMapOfSets(entries){
+    var map = new Map();
+
+    (Array.isArray(entries) ? entries : []).forEach(function(entry){
+      var key = Array.isArray(entry) ? entry[0] : (entry && entry.key);
+      var values = Array.isArray(entry) ? entry[1] : (entry && entry.values);
+      var set = new Set();
+
+      key = String(key || '').trim();
+      if(!key) return;
+
+      (Array.isArray(values) ? values : []).forEach(function(value){
+        value = String(value || '').trim();
+        if(value){
+          set.add(value);
+        }
+      });
+
+      if(set.size){
+        map.set(key, set);
+      }
+    });
+
+    return map;
+  }
+
+  function serializeActiveState(summary){
+    summary = summary || summarizeActiveState([]);
+    return {
+      activeDigitsByName: serializeMapOfSets(summary.activeDigitsByName),
+      leftFinalDigitsByName: serializeMapOfSets(summary.leftFinalDigitsByName)
+    };
+  }
+
+  function restoreActiveState(serialized){
+    serialized = serialized || {};
+    return {
+      activeDigitsByName: restoreMapOfSets(serialized.activeDigitsByName),
+      leftFinalDigitsByName: restoreMapOfSets(serialized.leftFinalDigitsByName)
+    };
+  }
+
+  function getActiveSummary(parsed){
+    var serialized;
+
+    if(parsed && parsed.activeSummary){
+      return restoreActiveState(parsed.activeSummary);
+    }
+
+    serialized = parsed && parsed.summary;
+    if(serialized && (serialized.activeDigitsByName || serialized.leftFinalDigitsByName)){
+      return restoreActiveState(serialized);
+    }
+
+    return summarizeActiveState(Array.isArray(parsed && parsed.events) ? parsed.events : []);
+  }
+
+  function compactParsed(parsed){
+    parsed = parsed || {};
+
+    return {
+      joinedCount: Number(parsed.joinedCount || 0),
+      leftCount: Number(parsed.leftCount || 0),
+      activeSummary: serializeActiveState(getActiveSummary(parsed))
+    };
+  }
+
   window.KakaoCheckParser = {
     NAME_ONLY_SENTINEL: NAME_ONLY_SENTINEL,
     splitNickname: splitNickname,
     parseChatText: parseChatText,
     combineFiles: combineFiles,
-    summarizeActiveState: summarizeActiveState
+    summarizeActiveState: summarizeActiveState,
+    serializeActiveState: serializeActiveState,
+    restoreActiveState: restoreActiveState,
+    getActiveSummary: getActiveSummary,
+    compactParsed: compactParsed
   };
 })();

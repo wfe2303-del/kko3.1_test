@@ -535,13 +535,27 @@
       savedAt: new Date().toISOString(),
       execution: {
         previewOnly: !!execution.previewOnly,
-        parsed: parser.compactParsed(execution.parsed || { events: [], joinedCount: 0, leftCount: 0 }),
+        parsed: compactParsedForStorage(execution.parsed || { events: [], joinedCount: 0, leftCount: 0 }),
         rosterRows: compactRosterRows(execution.rosterRows || []),
         sheetMeta: clonePlain(execution.sheetMeta || {}),
         pendingItems: clonePlain(execution.pendingItems || []),
         manualRules: clonePlain(execution.manualRules || []),
         historyState: historyState
       }
+    };
+  }
+
+  function compactParsedForStorage(parsed){
+    parsed = parsed || { events: [], joinedCount: 0, leftCount: 0 };
+
+    if(parser && typeof parser.compactParsed === 'function'){
+      return parser.compactParsed(parsed);
+    }
+
+    return {
+      joinedCount: Number(parsed.joinedCount || 0),
+      leftCount: Number(parsed.leftCount || 0),
+      events: Array.isArray(parsed.events) ? parsed.events.slice() : []
     };
   }
 
