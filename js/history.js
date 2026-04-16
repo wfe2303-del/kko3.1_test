@@ -87,6 +87,10 @@
   }
 
   function applyManualAction(payload){
+    if(!config.matchHistoryEnabled){
+      return Promise.resolve(buildDisabledResponse('', { items: [], manualRules: [] }));
+    }
+
     return apiFetch('/api/match-records', {
       method: 'POST',
       headers: {
@@ -95,6 +99,24 @@
       },
       body: JSON.stringify({
         action: 'applyManualAction',
+        payload: payload || {}
+      })
+    });
+  }
+
+  function applyManualActionsBatch(payload){
+    if(!config.matchHistoryEnabled){
+      return Promise.resolve(buildDisabledResponse('', { items: [], manualRules: [] }));
+    }
+
+    return apiFetch('/api/match-records', {
+      method: 'POST',
+      headers: {
+        'Accept': 'application/json',
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({
+        action: 'applyManualActionsBatch',
         payload: payload || {}
       })
     });
@@ -136,6 +158,7 @@
 
   window.KakaoCheckHistory = {
     applyManualAction: applyManualAction,
+    applyManualActionsBatch: applyManualActionsBatch,
     getStorageOverview: getStorageOverview,
     getStoredSheetData: getStoredSheetData,
     health: health,

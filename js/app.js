@@ -993,8 +993,8 @@
     var execution;
     var snapshotError = '';
     var selectedKeys;
-    var responses = [];
-    var index;
+    var response;
+    var manualRules;
 
     if(!panelState || !panelState.lastExecution || !Array.isArray(queueItems) || !queueItems.length){
       return;
@@ -1010,22 +1010,19 @@
       ui.setPanelError(panelState.el, '');
       ui.setPanelStatus(panelState.el, '일괄 제외 저장 중...', 'warn');
 
-      for(index = 0; index < queueItems.length; index += 1){
-        var response = await history.applyManualAction({
-          sheetTitle: panelState.selectedSheet,
-          item: queueItems[index],
-          actionType: 'exclude-staff',
-          targetRow: null
-        });
+      response = await history.applyManualActionsBatch({
+        sheetTitle: panelState.selectedSheet,
+        items: queueItems,
+        actionType: 'exclude-staff'
+      });
 
-        if(response && response.enabled === false){
-          throw new Error(response.message || '일괄 제외를 저장하지 못했습니다.');
-        }
-        responses.push(response);
+      if(response && response.enabled === false){
+        throw new Error(response.message || '일괄 제외를 저장하지 못했습니다.');
       }
 
-      responses.forEach(function(response){
-        execution.manualRules = upsertManualRule(execution.manualRules, response && response.manualRule ? response.manualRule : {});
+      manualRules = Array.isArray(response && response.manualRules) ? response.manualRules : [];
+      manualRules.forEach(function(rule){
+        execution.manualRules = upsertManualRule(execution.manualRules, rule || {});
       });
       execution.pendingItems = execution.pendingItems.filter(function(item){
         return !selectedKeys.has(item.queueKey);
@@ -1037,9 +1034,15 @@
       });
 
       if(execution.historyState){
-        execution.historyState.pendingCount = Math.max(0, Number(execution.historyState.pendingCount || 0) - responses.length);
-        execution.historyState.openCount = Math.max(0, Number(execution.historyState.openCount || 0) - responses.length);
-        execution.historyState.manualRuleCount = execution.manualRules.length;
+        execution.historyState.pendingCount = response && response.summary
+          ? Number(response.summary.openCount || 0)
+          : Math.max(0, Number(execution.historyState.pendingCount || 0) - queueItems.length);
+        execution.historyState.openCount = response && response.summary
+          ? Number(response.summary.openCount || 0)
+          : Math.max(0, Number(execution.historyState.openCount || 0) - queueItems.length);
+        execution.historyState.manualRuleCount = response && response.summary
+          ? Number(response.summary.manualRuleCount || execution.manualRules.length)
+          : execution.manualRules.length;
         execution.historyState.synced = true;
         execution.historyState.syncError = '';
       }

@@ -91,6 +91,8 @@ function handleRequest_(request) {
       return saveSnapshot_(request.payload || {});
     case 'applyManualAction':
       return applyManualAction_(request.payload || {});
+    case 'applyManualActionsBatch':
+      return applyManualActionsBatch_(request.payload || {});
     case 'getStorageOverview':
       return getStorageOverview_();
     case 'getStoredSheetData':
@@ -437,6 +439,78 @@ function applyManualAction_(payload) {
     enabled: true,
     queueItem: queueRowToEntry_(existing),
     manualRule: queueRowToManualRule_(existing),
+    summary: summaryRowToOverview_(summaryRow)
+  };
+}
+
+function applyManualActionsBatch_(payload) {
+  var queueSheet = ensureStorageSheet_(MATCH_BACKEND.queueSheetName, MATCH_BACKEND.queueHeaders);
+  var nowIso = new Date().toISOString();
+  var normalizedSheetTitle = normalizeText_(payload.sheetTitle || (payload.items && payload.items[0] && payload.items[0].sheetTitle));
+  var actionType = normalizeText_(payload.actionType);
+  var queueState;
+  var summaryRow;
+  var updatedRows = [];
+
+  if (!normalizedSheetTitle) {
+    throw new Error('Sheet title is required.');
+  }
+
+  if (actionType !== 'exclude-staff') {
+    throw new Error('Unsupported manual batch action.');
+  }
+
+  queueState = readQueueStateForSheet_(queueSheet, normalizedSheetTitle);
+  (Array.isArray(payload.items) ? payload.items : []).forEach(function(rawItem) {
+    var item = normalizeQueueItem_(rawItem, normalizedSheetTitle);
+    var existing = queueState.byKey[item.queueKey];
+
+    if (!item.queueKey) {
+      throw new Error('Invalid queue item.');
+    }
+
+    if (!existing) {
+      existing = createQueueRowObject_(item);
+      existing.firstSeenAt = nowIso;
+      existing.lastSeenAt = nowIso;
+      queueState.rows.push(existing);
+      queueState.byKey[item.queueKey] = existing;
+      queueState.newRows.push(existing);
+    }
+
+    existing.sheetTitle = item.sheetTitle;
+    existing.category = item.category;
+    existing.name = item.name;
+    existing.nameNormalized = item.nameNormalized;
+    existing.phone4 = item.phone4;
+    existing.label = item.label;
+    existing.reason = item.reason;
+    existing.lastSeenAt = nowIso;
+    existing.contextJson = safeJson_(item);
+    existing.handledBy = normalizeText_(payload.actorName || payload.actorEmail);
+    existing.handledAt = nowIso;
+    existing.resolvedAt = nowIso;
+    existing.status = 'EXCLUDED_STAFF';
+    existing.resolutionType = 'EXCLUDE_STAFF';
+    existing.resolutionLabel = '코칭스태프 제외';
+    existing.resolutionTargetRow = '';
+    existing.resolutionTargetName = '';
+    existing.resolutionTargetPhone = '';
+
+    markQueueStateDirty_(queueState, existing);
+    updatedRows.push(existing);
+  });
+
+  flushQueueState_(queueSheet, queueState);
+  summaryRow = writeSummarySnapshotState_(normalizedSheetTitle, buildQueueCounts_(queueState.rows), {
+    lastSavedAt: nowIso
+  });
+  invalidateStorageCaches_(normalizedSheetTitle);
+
+  return {
+    enabled: true,
+    items: updatedRows.map(queueRowToEntry_),
+    manualRules: updatedRows.map(queueRowToManualRule_),
     summary: summaryRowToOverview_(summaryRow)
   };
 }

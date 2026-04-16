@@ -52,6 +52,11 @@ module.exports = async function handler(req, res) {
       return;
     }
 
+    if(action === 'applyManualActionsBatch'){
+      await handleApplyManualActionsBatch(req, res, session.user);
+      return;
+    }
+
     if(action === 'getStorageOverview'){
       await handleStorageOverview(res, session.user);
       return;
@@ -145,6 +150,41 @@ async function handleApplyManualAction(req, res, user){
   response = await appsScript.callAppsScript('applyManualAction', payload);
   res.statusCode = 200;
   res.end(JSON.stringify(response || { enabled: true }));
+}
+
+async function handleApplyManualActionsBatch(req, res, user){
+  var body = readBody(req);
+  var payload = body.payload || {};
+  var sheetTitle = String(payload.sheetTitle || '').trim();
+  var items = Array.isArray(payload.items) ? payload.items : [];
+  var response;
+
+  if(!user.canWrite){
+    res.statusCode = 403;
+    res.end(JSON.stringify({ error: 'This account cannot save attendance records.' }));
+    return;
+  }
+
+  if(sheetTitle && !auth.canAccessSheet(user, sheetTitle)){
+    res.statusCode = 403;
+    res.end(JSON.stringify({ error: 'You do not have access to this sheet.' }));
+    return;
+  }
+
+  if(items.some(function(item){
+    var itemSheetTitle = String(item && item.sheetTitle || sheetTitle).trim();
+    return itemSheetTitle && !auth.canAccessSheet(user, itemSheetTitle);
+  })){
+    res.statusCode = 403;
+    res.end(JSON.stringify({ error: 'You do not have access to one or more selected items.' }));
+    return;
+  }
+
+  payload.actorEmail = user.username;
+  payload.actorName = user.displayName;
+  response = await appsScript.callAppsScript('applyManualActionsBatch', payload);
+  res.statusCode = 200;
+  res.end(JSON.stringify(response || { enabled: true, items: [], manualRules: [] }));
 }
 
 async function handleSaveSnapshot(req, res, user){
@@ -278,6 +318,15 @@ function buildDisabledResponse(action){
       sheets: [],
       summary: {},
       snapshot: null
+    };
+  }
+
+  if(action === 'applyManualActionsBatch'){
+    return {
+      enabled: false,
+      message: 'Stored execution backend is not configured.',
+      items: [],
+      manualRules: []
     };
   }
 
